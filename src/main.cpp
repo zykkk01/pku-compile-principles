@@ -5,6 +5,7 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 #include "ast.h"
 #include "koopa.h"
 
@@ -19,6 +20,9 @@ extern FILE *yyin;
 extern int yyparse(unique_ptr<BaseAST> &ast);
 
 ofstream ofs;
+int reg_count = 0;
+unordered_map<void*, int> reg_map;
+
 // 函数声明
 void Visit(const koopa_raw_program_t &program);
 void Visit(const koopa_raw_slice_t &slice);
@@ -27,6 +31,7 @@ void Visit(const koopa_raw_basic_block_t &bb);
 void Visit(const koopa_raw_value_t &value);
 void Visit(const koopa_raw_return_t &ret);
 void Visit(const koopa_raw_integer_t &integer);
+void Visit(const koopa_raw_binary_t &binary);
 
 // 访问 raw program
 void Visit(const koopa_raw_program_t &program) {
@@ -94,6 +99,11 @@ void Visit(const koopa_raw_value_t &value) {
     case KOOPA_RVT_INTEGER:
       // 访问 integer 指令
       Visit(kind.data.integer);
+      reg_map[(void *)value] = reg_map[(void *)&kind.data.integer];
+      break;
+    case KOOPA_RVT_BINARY:
+      Visit(kind.data.binary);
+      reg_map[(void *)value] = reg_map[(void *)&kind.data.binary];
       break;
     default:
       // 其他类型暂时遇不到
@@ -106,15 +116,39 @@ void Visit(const koopa_raw_value_t &value) {
 // ...
 
 void Visit(const koopa_raw_return_t &ret) {
-  ofs << "  li a0, ";
   Visit(ret.value);
-  ofs << endl;
+  ofs << "  mv a0, t" << reg_map[(void *)ret.value] << endl;
   ofs << "  ret" << endl;
 }
 
 void Visit(const koopa_raw_integer_t &integer) {
   int32_t value = integer.value;
-  ofs << value;
+  ofs << "  li t" << reg_count << ", " << value << endl;
+  reg_map[(void *)&integer] = reg_count++;
+}
+
+void Visit(const koopa_raw_binary_t &binary) {
+  if (reg_map.find((void *)&binary) != reg_map.end()) {
+    return;
+  }
+  Visit(binary.lhs);
+  Visit(binary.rhs);
+  int lhs_reg = reg_map[(void *)binary.lhs], rhs_reg = reg_map[(void *)binary.rhs];
+  switch (binary.op) {
+    case KOOPA_RBO_ADD:
+      ofs << "  add t" << reg_count << ", t" << lhs_reg << ", t" << rhs_reg << endl;
+      break;
+    case KOOPA_RBO_SUB:
+      ofs << "  sub t" << reg_count << ", t" << lhs_reg << ", t" << rhs_reg << endl;
+      break;
+    case KOOPA_RBO_EQ:
+      ofs << "  xor t" << reg_count++ << ", t" << lhs_reg << ", t" << rhs_reg << endl;
+      ofs << "  seqz t" << reg_count << ", t" << reg_count - 1 << endl;
+      break;
+    default:
+      assert(false);
+  }
+  reg_map[(void *)&binary] = reg_count++;
 }
 
 int main(int argc, const char *argv[]) {
@@ -141,7 +175,6 @@ int main(int argc, const char *argv[]) {
   } else if (string(mode) == "-riscv") {
       stringstream ss;
       ss << *ast;
-      // cout << ss.str();
 
       // 解析字符串 str, 得到 Koopa IR 程序
       koopa_program_t program;
