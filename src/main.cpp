@@ -115,15 +115,23 @@ void Visit(const koopa_raw_value_t &value) {
 // 视需求自行实现
 // ...
 
+string get_reg_name(int index) {
+  if (index < 7) {
+    return "t" + to_string(index);
+  } else {
+    return "a" + to_string(index - 7);
+  }
+}
+
 void Visit(const koopa_raw_return_t &ret) {
   Visit(ret.value);
-  ofs << "  mv a0, t" << reg_map[(void *)ret.value] << endl;
+  ofs << "  mv a0, " << get_reg_name(reg_map[(void *)ret.value]) << endl;
   ofs << "  ret" << endl;
 }
 
 void Visit(const koopa_raw_integer_t &integer) {
   int32_t value = integer.value;
-  ofs << "  li t" << reg_count << ", " << value << endl;
+  ofs << "  li " << get_reg_name(reg_count) << ", " << value << endl;
   reg_map[(void *)&integer] = reg_count++;
 }
 
@@ -133,17 +141,31 @@ void Visit(const koopa_raw_binary_t &binary) {
   }
   Visit(binary.lhs);
   Visit(binary.rhs);
-  int lhs_reg = reg_map[(void *)binary.lhs], rhs_reg = reg_map[(void *)binary.rhs];
+  int lhs_reg_idx = reg_map[(void *)binary.lhs];
+  int rhs_reg_idx = reg_map[(void *)binary.rhs];
+  string lhs_reg = get_reg_name(lhs_reg_idx);
+  string rhs_reg = get_reg_name(rhs_reg_idx);
+  
   switch (binary.op) {
     case KOOPA_RBO_ADD:
-      ofs << "  add t" << reg_count << ", t" << lhs_reg << ", t" << rhs_reg << endl;
+      ofs << "  add " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     case KOOPA_RBO_SUB:
-      ofs << "  sub t" << reg_count << ", t" << lhs_reg << ", t" << rhs_reg << endl;
+      ofs << "  sub " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     case KOOPA_RBO_EQ:
-      ofs << "  xor t" << reg_count++ << ", t" << lhs_reg << ", t" << rhs_reg << endl;
-      ofs << "  seqz t" << reg_count << ", t" << reg_count - 1 << endl;
+      ofs << "  xor " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      reg_map[(void *)&binary] = reg_count++;
+      ofs << "  seqz " << get_reg_name(reg_count) << ", " << get_reg_name(reg_count - 1) << endl;
+      break;
+    case KOOPA_RBO_MUL:
+      ofs << "  mul " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      break;
+    case KOOPA_RBO_DIV:
+      ofs << "  div " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      break;
+    case KOOPA_RBO_MOD:
+      ofs << "  rem " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     default:
       assert(false);
