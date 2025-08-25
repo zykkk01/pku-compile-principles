@@ -38,7 +38,7 @@ void StmtAST::print(std::ostream& os) const {
 }
 
 void ExpAST::print(std::ostream& os) const {
-    os << *unary_exp;
+    os << *add_exp;
 }
 
 void PrimaryExpAST::print(std::ostream& os) const {
@@ -63,5 +63,46 @@ void UnaryExpAST::print(std::ostream& os) const {
             os << "  %" << var_count << " = eq 0, %" << var_count - 1 << std::endl;
             var_count++;
         }
+    }
+}
+
+void AddExpAST::print(std::ostream& os) const {
+    if (add_exp) {
+        int lhs, rhs;
+        os << *add_exp;
+        lhs = var_count - 1;
+        os << *mul_exp;
+        rhs = var_count - 1;
+        if (add_op == "+") {
+            os << "  %" << var_count << " = add %" << lhs << ", %" << rhs << std::endl;
+            var_count++;
+        } else if (add_op == "-") {
+            os << "  %" << var_count << " = sub %" << lhs << ", %" << rhs << std::endl;
+            var_count++;
+        }
+    } else {
+        os << *mul_exp;
+    }
+}
+
+void MulExpAST::print(std::ostream& os) const {
+    if (mul_exp) {
+        int lhs, rhs;
+        os << *mul_exp;
+        lhs = var_count - 1;
+        os << *unary_exp;
+        rhs = var_count - 1;
+        if (mul_op == "*") {
+            os << "  %" << var_count << " = mul %" << lhs << ", %" << rhs << std::endl;
+            var_count++;
+        } else if (mul_op == "/") {
+            os << "  %" << var_count << " = div %" << lhs << ", %" << rhs << std::endl;
+            var_count++;
+        } else if (mul_op == "%") {
+            os << "  %" << var_count << " = mod %" << lhs << ", %" << rhs << std::endl;
+            var_count++;
+        }
+    } else {
+        os << *unary_exp;
     }
 }

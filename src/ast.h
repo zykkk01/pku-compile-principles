@@ -51,7 +51,7 @@ public:
 
 class ExpAST : public BaseAST {
 public:
-    std::unique_ptr<BaseAST> unary_exp;
+    std::unique_ptr<BaseAST> add_exp;
     void print(std::ostream& os) const override;
 };
 
@@ -67,5 +67,21 @@ public:
     std::unique_ptr<BaseAST> primary_exp;
     std::string unary_op;
     std::unique_ptr<BaseAST> unary_exp;
+    void print(std::ostream& os) const override;
+};
+
+class AddExpAST : public BaseAST {
+public:
+    std::unique_ptr<BaseAST> mul_exp;
+    std::unique_ptr<BaseAST> add_exp;
+    std::string add_op;
+    void print(std::ostream& os) const override;
+};
+
+class MulExpAST : public BaseAST {
+public:
+    std::unique_ptr<BaseAST> unary_exp;
+    std::unique_ptr<BaseAST> mul_exp;
+    std::string mul_op;
     void print(std::ostream& os) const override;
 };
