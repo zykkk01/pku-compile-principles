@@ -43,6 +43,21 @@ Hexadecimal   0[xX][0-9a-fA-F]+
 {Octal}         { yylval.int_val = strtol(yytext, nullptr, 0); return INT_CONST; }
 {Hexadecimal}   { yylval.int_val = strtol(yytext, nullptr, 0); return INT_CONST; }
 
+"+"             { return ADD; }
+"-"             { return SUB; }
+"!"             { return NOT; }
+"*"             { return MUL; }
+"/"             { return DIV; }
+"%"             { return MOD; }
+"=="            { return EQ; }
+"!="            { return NE; }
+">"             { return GT; }
+"<"             { return LT; }
+">="            { return GE; }
+"<="            { return LE; }
+"&&"            { return LAND; }
+"||"            { return LOR; }
+
 .               { return yytext[0]; }
 
 %%

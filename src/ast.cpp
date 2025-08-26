@@ -38,7 +38,7 @@ void StmtAST::print(std::ostream& os) const {
 }
 
 void ExpAST::print(std::ostream& os) const {
-    os << *add_exp;
+    os << *lor_exp;
 }
 
 void PrimaryExpAST::print(std::ostream& os) const {
@@ -104,5 +104,85 @@ void MulExpAST::print(std::ostream& os) const {
         }
     } else {
         os << *unary_exp;
+    }
+}
+
+void LOrExpAST::print(std::ostream& os) const {
+    if (lor_exp) {
+        int lhs, rhs;
+        os << *lor_exp;
+        lhs = var_count - 1;
+        os << *land_exp;
+        rhs = var_count - 1;
+        os << "  %" << var_count << " = ne 0, %" << lhs << std::endl;
+        int lhs_bool = var_count++;
+        os << "  %" << var_count << " = ne 0, %" << rhs << std::endl;
+        int rhs_bool = var_count++;
+        os << "  %" << var_count << " = or %" << lhs_bool << ", %" << rhs_bool << std::endl; 
+        var_count++;
+    } else {
+        os << *land_exp;
+    }
+}
+
+void LAndExpAST::print(std::ostream& os) const {
+    if (land_exp) {
+        int lhs, rhs;
+        os << *land_exp;
+        lhs = var_count - 1;
+        os << *eq_exp;
+        rhs = var_count - 1;
+        os << "  %" << var_count << " = ne 0, %" << lhs << std::endl;
+        int lhs_bool = var_count++;
+        os << "  %" << var_count << " = ne 0, %" << rhs << std::endl;
+        int rhs_bool = var_count++;
+        os << "  %" << var_count << " = and %" << lhs_bool << ", %" << rhs_bool << std::endl; 
+        var_count++;
+    } else {
+        os << *eq_exp;
+    }
+}
+
+void EqExpAST::print(std::ostream& os) const {
+    if (eq_exp) {
+        int lhs, rhs;
+        os << *eq_exp;
+        lhs = var_count - 1;
+        os << *rel_exp;
+        rhs = var_count - 1;
+        if (eq_op == "==") {
+            os << "  %" << var_count << " = eq %" << lhs << ", %" << rhs << std::endl;
+            var_count++;
+        } else if (eq_op == "!=") {
+            os << "  %" << var_count << " = ne %" << lhs << ", %" << rhs << std::endl;
+            var_count++;
+        }
+    } else {
+        os << *rel_exp;
+    }
+}
+
+void RelExpAST::print(std::ostream& os) const {
+    if (rel_exp) {
+        int lhs, rhs;
+        os << *rel_exp;
+        lhs = var_count - 1;
+        os << *add_exp;
+        rhs = var_count - 1;
+        if (rel_op == "<") {
+            os << "  %" << var_count << " = lt %" << lhs << ", %" << rhs << std::endl;
+            var_count++;
+        } else if (rel_op == ">") {
+            os << "  %" << var_count << " = gt %" << lhs << ", %" << rhs << std::endl;
+            var_count++;
+        } else if (rel_op == "<=") {
+            os << "  %" << var_count << " = le %" << lhs << ", %" << rhs << std::endl;
+            var_count++;
+        } else if (rel_op == ">=") {
+            os << "  %" << var_count << " = ge %" << lhs << ", %" << rhs << std::endl;
+            var_count++;
+        }
+    } else {
+        os << *add_exp;
     }
 }

@@ -40,11 +40,12 @@ using namespace std;
 %token INT RETURN
 %token <str_val> IDENT
 %token <int_val> INT_CONST
+%token ADD SUB NOT MUL DIV MOD EQ NE GT LT GE LE LAND LOR
 
 // 非终结符的类型定义
-%type <ast_val> FuncDef FuncType Block Stmt Exp UnaryExp PrimaryExp AddExp MulExp
+%type <ast_val> FuncDef FuncType Block Stmt Exp UnaryExp PrimaryExp AddExp MulExp RelExp EqExp LAndExp LOrExp
 %type <int_val> Number
-%type <str_val> UnaryOp AddOp MulOp
+%type <str_val> UnaryOp AddOp MulOp RelOp EqOp
 
 %%
 
@@ -107,35 +108,69 @@ Stmt
   ;
 
 Exp
-  : AddExp {
+  : LOrExp {
     auto ast = new ExpAST();
-    ast->add_exp = unique_ptr<BaseAST>($1);
-    $$ = ast;
-  }
-
-UnaryExp
-  : PrimaryExp {
-    auto ast = new UnaryExpAST();
-    ast->primary_exp = unique_ptr<BaseAST>($1);
-    $$ = ast;
-  }
-  | UnaryOp UnaryExp {
-    auto ast = new UnaryExpAST();
-    ast->unary_op = *unique_ptr<string>($1);
-    ast->unary_exp = unique_ptr<BaseAST>($2);
+    ast->lor_exp = unique_ptr<BaseAST>($1);
     $$ = ast;
   }
   ;
 
-PrimaryExp
-  : '(' Exp ')' {
-    auto ast = new PrimaryExpAST();
-    ast->exp = unique_ptr<BaseAST>($2);
+LOrExp
+  : LAndExp {
+    auto ast = new LOrExpAST();
+    ast->land_exp = unique_ptr<BaseAST>($1);
     $$ = ast;
   }
-  | Number {
-    auto ast = new PrimaryExpAST();
-    ast->number = $1;
+  | LOrExp LOR LAndExp {
+    auto ast = new LOrExpAST();
+    ast->lor_exp = unique_ptr<BaseAST>($1);
+    ast->lor_op = "||";
+    ast->land_exp = unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  ;
+
+LAndExp
+  : EqExp {
+    auto ast = new LAndExpAST();
+    ast->eq_exp = unique_ptr<BaseAST>($1);
+    $$ = ast;
+  }
+  | LAndExp LAND EqExp {
+    auto ast = new LAndExpAST();
+    ast->land_exp = unique_ptr<BaseAST>($1);
+    ast->land_op = "&&";
+    ast->eq_exp = unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  ;
+
+EqExp
+  : RelExp {
+    auto ast = new EqExpAST();
+    ast->rel_exp = unique_ptr<BaseAST>($1);
+    $$ = ast;
+  }
+  | EqExp EqOp RelExp {
+    auto ast = new EqExpAST();
+    ast->eq_exp = unique_ptr<BaseAST>($1);
+    ast->eq_op = *unique_ptr<string>($2);
+    ast->rel_exp = unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  ;
+
+RelExp
+  : AddExp {
+    auto ast = new RelExpAST();
+    ast->add_exp = unique_ptr<BaseAST>($1);
+    $$ = ast;
+  }
+  | RelExp RelOp AddExp {
+    auto ast = new RelExpAST();
+    ast->rel_exp = unique_ptr<BaseAST>($1);
+    ast->rel_op = *unique_ptr<string>($2);
+    ast->add_exp = unique_ptr<BaseAST>($3);
     $$ = ast;
   }
   ;
@@ -170,6 +205,33 @@ MulExp
   }
   ;
 
+UnaryExp
+  : PrimaryExp {
+    auto ast = new UnaryExpAST();
+    ast->primary_exp = unique_ptr<BaseAST>($1);
+    $$ = ast;
+  }
+  | UnaryOp UnaryExp {
+    auto ast = new UnaryExpAST();
+    ast->unary_op = *unique_ptr<string>($1);
+    ast->unary_exp = unique_ptr<BaseAST>($2);
+    $$ = ast;
+  }
+  ;
+
+PrimaryExp
+  : '(' Exp ')' {
+    auto ast = new PrimaryExpAST();
+    ast->exp = unique_ptr<BaseAST>($2);
+    $$ = ast;
+  }
+  | Number {
+    auto ast = new PrimaryExpAST();
+    ast->number = $1;
+    $$ = ast;
+  }
+  ;
+
 Number
   : INT_CONST {
     $$ = $1;
@@ -177,18 +239,33 @@ Number
   ;
 
 UnaryOp
-  : '+' { $$ = new string("+"); }
-  | '-' { $$ = new string("-"); }
-  | '!' { $$ = new string("!"); };
+  : ADD { $$ = new string("+"); }
+  | SUB { $$ = new string("-"); }
+  | NOT { $$ = new string("!"); }
+  ;
 
 AddOp
-  : '+' { $$ = new string("+"); }
-  | '-' { $$ = new string("-"); };
+  : ADD { $$ = new string("+"); }
+  | SUB { $$ = new string("-"); }
+  ;
 
 MulOp
-  : '*' { $$ = new string("*"); }
-  | '/' { $$ = new string("/"); }
-  | '%' { $$ = new string("%"); };
+  : MUL { $$ = new string("*"); }
+  | DIV { $$ = new string("/"); }
+  | MOD { $$ = new string("%"); }
+  ;
+
+RelOp
+  : LT { $$ = new string("<"); }
+  | GT { $$ = new string(">"); }
+  | LE { $$ = new string("<="); }
+  | GE { $$ = new string(">="); }
+  ;
+
+EqOp
+  : EQ { $$ = new string("=="); }
+  | NE { $$ = new string("!="); }
+  ;
 
 %%
 
@@ -197,4 +274,3 @@ MulOp
 void yyerror(unique_ptr<BaseAST> &ast, const char *s) {
   cerr << "error: " << s << endl;
 }
-
