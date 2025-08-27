@@ -21,7 +21,7 @@ extern int yyparse(unique_ptr<BaseAST> &ast);
 
 ofstream ofs;
 int reg_count = 0;
-unordered_map<void*, int> reg_map;
+unordered_map<const void*, int> reg_map;
 
 // 函数声明
 void Visit(const koopa_raw_program_t &program);
@@ -73,6 +73,8 @@ void Visit(const koopa_raw_slice_t &slice) {
 void Visit(const koopa_raw_function_t &func) {
   // 执行一些其他的必要操作
   // ...
+  reg_count = 0;
+  reg_map.clear();
   ofs << "  .globl " << (func->name + 1) << endl;
   ofs << (func->name + 1) << ":" << endl;
   // 访问所有基本块
@@ -99,11 +101,11 @@ void Visit(const koopa_raw_value_t &value) {
     case KOOPA_RVT_INTEGER:
       // 访问 integer 指令
       Visit(kind.data.integer);
-      reg_map[(void *)value] = reg_map[(void *)&kind.data.integer];
+      reg_map[value] = reg_map[&kind.data.integer];
       break;
     case KOOPA_RVT_BINARY:
       Visit(kind.data.binary);
-      reg_map[(void *)value] = reg_map[(void *)&kind.data.binary];
+      reg_map[value] = reg_map[&kind.data.binary];
       break;
     default:
       // 其他类型暂时遇不到
@@ -125,79 +127,87 @@ string get_reg_name(int index) {
 
 void Visit(const koopa_raw_return_t &ret) {
   Visit(ret.value);
-  ofs << "  mv a0, " << get_reg_name(reg_map[(void *)ret.value]) << endl;
+  ofs << "  mv a0, " << get_reg_name(reg_map[ret.value]) << endl;
   ofs << "  ret" << endl;
 }
 
 void Visit(const koopa_raw_integer_t &integer) {
   int32_t value = integer.value;
   ofs << "  li " << get_reg_name(reg_count) << ", " << value << endl;
-  reg_map[(void *)&integer] = reg_count++;
+  reg_map[&integer] = reg_count++;
 }
 
 void Visit(const koopa_raw_binary_t &binary) {
-  if (reg_map.find((void *)&binary) != reg_map.end()) {
+  if (reg_map.count(&binary)) {
     return;
   }
   Visit(binary.lhs);
   Visit(binary.rhs);
-  int lhs_reg_idx = reg_map[(void *)binary.lhs];
-  int rhs_reg_idx = reg_map[(void *)binary.rhs];
+  int lhs_reg_idx = reg_map[binary.lhs];
+  int rhs_reg_idx = reg_map[binary.rhs];
   string lhs_reg = get_reg_name(lhs_reg_idx);
   string rhs_reg = get_reg_name(rhs_reg_idx);
   
+  int dest_reg_idx;
+  string dest_reg;
+
+  if (binary.lhs->kind.tag == KOOPA_RVT_INTEGER) {
+    dest_reg_idx = rhs_reg_idx;
+  } else if (binary.rhs->kind.tag == KOOPA_RVT_INTEGER) {
+    dest_reg_idx = lhs_reg_idx;
+  } else {
+    dest_reg_idx = lhs_reg_idx;
+  }
+  dest_reg = get_reg_name(dest_reg_idx);
+
   switch (binary.op) {
     case KOOPA_RBO_ADD:
-      ofs << "  add " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  add " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     case KOOPA_RBO_SUB:
-      ofs << "  sub " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  sub " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     case KOOPA_RBO_EQ:
-      ofs << "  xor " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
-      reg_count++;
-      ofs << "  seqz " << get_reg_name(reg_count) << ", " << get_reg_name(reg_count - 1) << endl;
+      ofs << "  xor " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  seqz " << dest_reg << ", " << dest_reg << endl;
       break;
     case KOOPA_RBO_MUL:
-      ofs << "  mul " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  mul " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     case KOOPA_RBO_DIV:
-      ofs << "  div " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  div " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     case KOOPA_RBO_MOD:
-      ofs << "  rem " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  rem " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     case KOOPA_RBO_NOT_EQ:
-      ofs << "  xor " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
-      reg_count++;
-      ofs << "  snez " << get_reg_name(reg_count) << ", " << get_reg_name(reg_count - 1) << endl;
+      ofs << "  xor " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  snez " << dest_reg << ", " << dest_reg << endl;
       break;
     case KOOPA_RBO_GT:
-      ofs << "  sgt " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  sgt " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     case KOOPA_RBO_LT:
-      ofs << "  slt " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  slt " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     case KOOPA_RBO_GE:
-      ofs << "  slt " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
-      reg_count++;
-      ofs << "  seqz " << get_reg_name(reg_count) << ", " << get_reg_name(reg_count - 1) << endl;
+      ofs << "  slt " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  seqz " << dest_reg << ", " << dest_reg << endl;
       break;
     case KOOPA_RBO_LE:
-      ofs << "  sgt " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
-      reg_count++;
-      ofs << "  seqz " << get_reg_name(reg_count) << ", " << get_reg_name(reg_count - 1) << endl;
+      ofs << "  sgt " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  seqz " << dest_reg << ", " << dest_reg << endl;
       break;
     case KOOPA_RBO_AND:
-      ofs << "  and " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  and " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     case KOOPA_RBO_OR:
-      ofs << "  or " << get_reg_name(reg_count) << ", " << lhs_reg << ", " << rhs_reg << endl;
+      ofs << "  or " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
       break;
     default:
       assert(false);
   }
-  reg_map[(void *)&binary] = reg_count++;
+  reg_map[&binary] = dest_reg_idx;
 }
 
 int main(int argc, const char *argv[]) {
