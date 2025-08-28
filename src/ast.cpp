@@ -1,10 +1,13 @@
 #include "ast.h"
 
 #include <string>
+#include <unordered_map>
+#include <stdexcept>
 
 class SymbolTable {
 public:
     int next_reg = 0;
+    std::unordered_map<std::string, int> var_table;
 };
 
 std::ostream& operator<<(std::ostream& os, const BaseAST& ast) {
@@ -36,14 +39,17 @@ std::string FuncTypeAST::generate_ir(std::ostream& os, SymbolTable& symbols) con
 std::string BlockAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
     os << "{" << std::endl;
     os << "%entry:" << std::endl;
-    auto ret_val = stmt->generate_ir(os, symbols);
-    os << "  ret " << ret_val << std::endl;
+    for (const auto& block_item : block_items) {
+        block_item->generate_ir(os, symbols);
+    }
     os << "}" << std::endl;
     return "";
 }
 
 std::string StmtAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
-    return exp->generate_ir(os, symbols);
+    auto ret_val = exp->generate_ir(os, symbols);
+    os << "  ret " << ret_val << std::endl;
+    return "";
 }
 
 std::string ExpAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
@@ -53,6 +59,8 @@ std::string ExpAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
 std::string PrimaryExpAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
     if (exp) {
         return exp->generate_ir(os, symbols);
+    } else if (lval) {
+        return std::to_string(lval->evaluate_const(symbols));
     } else {
         return std::to_string(number);
     }
@@ -181,4 +189,158 @@ std::string RelExpAST::generate_ir(std::ostream& os, SymbolTable& symbols) const
     } else {
         return add_exp->generate_ir(os, symbols);
     }
+}
+
+std::string DeclAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
+    if (const_decl) {
+        return const_decl->generate_ir(os, symbols);
+    }
+    return "";
+}
+
+std::string ConstDeclAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
+    for (const auto& const_def : const_defs) {
+        const_def->generate_ir(os, symbols);
+    }
+    return "";
+}
+
+std::string ConstDefAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
+    int val = const_init_val->evaluate_const(symbols);
+    symbols.var_table[ident] = val;
+    return "";
+}
+
+std::string ConstInitValAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
+    return "";
+}
+
+std::string ConstExpAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
+    return std::to_string(evaluate_const(symbols));
+}
+
+int LValAST::evaluate_const(SymbolTable& symbols) const {
+    if (symbols.var_table.count(ident)) {
+        return symbols.var_table.at(ident);
+    }
+    throw std::runtime_error("Undefined constant: " + ident);
+}
+
+int PrimaryExpAST::evaluate_const(SymbolTable& symbols) const {
+    if (exp) {
+        return exp->evaluate_const(symbols);
+    } else if (lval) {
+        return lval->evaluate_const(symbols);
+    } else {
+        return number;
+    }
+}
+
+int UnaryExpAST::evaluate_const(SymbolTable& symbols) const {
+    if (primary_exp) {
+        return primary_exp->evaluate_const(symbols);
+    } else {
+        int val = unary_exp->evaluate_const(symbols);
+        if (unary_op == "+") return val;
+        if (unary_op == "-") return -val;
+        if (unary_op == "!") return !val;
+    }
+    return 0;
+}
+
+int AddExpAST::evaluate_const(SymbolTable& symbols) const {
+    if (add_exp) {
+        int lhs = add_exp->evaluate_const(symbols);
+        int rhs = mul_exp->evaluate_const(symbols);
+        if (add_op == "+") return lhs + rhs;
+        if (add_op == "-") return lhs - rhs;
+    } else {
+        return mul_exp->evaluate_const(symbols);
+    }
+    return 0;
+}
+
+int MulExpAST::evaluate_const(SymbolTable& symbols) const {
+    if (mul_exp) {
+        int lhs = mul_exp->evaluate_const(symbols);
+        int rhs = unary_exp->evaluate_const(symbols);
+        if (mul_op == "*") return lhs * rhs;
+        if (mul_op == "/") return lhs / rhs;
+        if (mul_op == "%") return lhs % rhs;
+    } else {
+        return unary_exp->evaluate_const(symbols);
+    }
+    return 0;
+}
+
+int RelExpAST::evaluate_const(SymbolTable& symbols) const {
+    if (rel_exp) {
+        int lhs = rel_exp->evaluate_const(symbols);
+        int rhs = add_exp->evaluate_const(symbols);
+        if (rel_op == "<") return lhs < rhs;
+        if (rel_op == ">") return lhs > rhs;
+        if (rel_op == "<=") return lhs <= rhs;
+        if (rel_op == ">=") return lhs >= rhs;
+    } else {
+        return add_exp->evaluate_const(symbols);
+    }
+    return 0;
+}
+
+int EqExpAST::evaluate_const(SymbolTable& symbols) const {
+    if (eq_exp) {
+        int lhs = eq_exp->evaluate_const(symbols);
+        int rhs = rel_exp->evaluate_const(symbols);
+        if (eq_op == "==") return lhs == rhs;
+        if (eq_op == "!=") return lhs != rhs;
+    } else {
+        return rel_exp->evaluate_const(symbols);
+    }
+    return 0;
+}
+
+int LAndExpAST::evaluate_const(SymbolTable& symbols) const {
+    if (land_exp) {
+        int lhs = land_exp->evaluate_const(symbols);
+        int rhs = eq_exp->evaluate_const(symbols);
+        return lhs && rhs;
+    } else {
+        return eq_exp->evaluate_const(symbols);
+    }
+}
+
+int LOrExpAST::evaluate_const(SymbolTable& symbols) const {
+    if (lor_exp) {
+        int lhs = lor_exp->evaluate_const(symbols);
+        int rhs = land_exp->evaluate_const(symbols);
+        return lhs || rhs;
+    } else {
+        return land_exp->evaluate_const(symbols);
+    }
+}
+
+int ExpAST::evaluate_const(SymbolTable& symbols) const {
+    if (lor_exp) {
+        return lor_exp->evaluate_const(symbols);
+    }
+    return 0;
+}
+
+int ConstInitValAST::evaluate_const(SymbolTable& symbols) const {
+    if (const_exp) {
+        return const_exp->evaluate_const(symbols);
+    }
+    return 0;
+}
+
+int ConstExpAST::evaluate_const(SymbolTable& symbols) const {
+    return exp->evaluate_const(symbols);
+}
+
+std::string BTypeAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
+    return "";
+}
+
+std::string LValAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
+    return "";
 }
