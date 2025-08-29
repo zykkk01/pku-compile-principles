@@ -3,11 +3,12 @@
 #include <string>
 #include <unordered_map>
 #include <stdexcept>
+#include <variant>
 
 class SymbolTable {
 public:
     int next_reg = 0;
-    std::unordered_map<std::string, int> var_table;
+    std::unordered_map<std::string, std::variant<int, std::string>> var_table;
 };
 
 std::ostream& operator<<(std::ostream& os, const BaseAST& ast) {
@@ -47,8 +48,15 @@ std::string BlockAST::generate_ir(std::ostream& os, SymbolTable& symbols) const 
 }
 
 std::string StmtAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
-    auto ret_val = exp->generate_ir(os, symbols);
-    os << "  ret " << ret_val << std::endl;
+    if (is_return) {
+        auto ret_val = exp->generate_ir(os, symbols);
+        os << "  ret " << ret_val << std::endl;
+    } else {
+        auto store_val = exp->generate_ir(os, symbols);
+        if (auto lval_ast = dynamic_cast<LValAST*>(lval.get())) {
+            os << "  store " << store_val << ", @" << lval_ast->ident << std::endl;
+        }
+    }
     return "";
 }
 
@@ -60,7 +68,7 @@ std::string PrimaryExpAST::generate_ir(std::ostream& os, SymbolTable& symbols) c
     if (exp) {
         return exp->generate_ir(os, symbols);
     } else if (lval) {
-        return std::to_string(lval->evaluate_const(symbols));
+        return lval->generate_ir(os, symbols);
     } else {
         return std::to_string(number);
     }
@@ -194,6 +202,8 @@ std::string RelExpAST::generate_ir(std::ostream& os, SymbolTable& symbols) const
 std::string DeclAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
     if (const_decl) {
         return const_decl->generate_ir(os, symbols);
+    } else if (var_decl) {
+        return var_decl->generate_ir(os, symbols);
     }
     return "";
 }
@@ -220,10 +230,36 @@ std::string ConstExpAST::generate_ir(std::ostream& os, SymbolTable& symbols) con
 }
 
 int LValAST::evaluate_const(SymbolTable& symbols) const {
-    if (symbols.var_table.count(ident)) {
-        return symbols.var_table.at(ident);
+    if (!symbols.var_table.count(ident)) {
+        throw std::runtime_error("Undefined variable: " + ident);
     }
-    throw std::runtime_error("Undefined constant: " + ident);
+    
+    auto& value = symbols.var_table.at(ident);
+    if (std::holds_alternative<int>(value)) {
+        return std::get<int>(value);
+    }
+    throw std::runtime_error("Invalid variable type");
+}
+
+std::string VarDeclAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
+    for (const auto& var_def : var_defs) {
+        var_def->generate_ir(os, symbols);
+    }
+    return "";
+}
+
+std::string VarDefAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
+    symbols.var_table[ident] = "@" + ident;
+    os << "  @" << ident << " = alloc i32" << std::endl;
+    if (init_val) {
+        auto store_val = init_val->generate_ir(os, symbols);
+        os << "  store " << store_val << ", @" << ident << std::endl;
+    }
+    return "";
+}
+
+std::string InitValAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
+    return exp->generate_ir(os, symbols);
 }
 
 int PrimaryExpAST::evaluate_const(SymbolTable& symbols) const {
@@ -342,5 +378,17 @@ std::string BTypeAST::generate_ir(std::ostream& os, SymbolTable& symbols) const 
 }
 
 std::string LValAST::generate_ir(std::ostream& os, SymbolTable& symbols) const {
-    return "";
+    if (!symbols.var_table.count(ident)) {
+        throw std::runtime_error("Undefined variable: " + ident);
+    }
+    
+    auto& value = symbols.var_table.at(ident);
+    if (std::holds_alternative<int>(value)) {
+        return std::to_string(std::get<int>(value));
+    } else if (std::holds_alternative<std::string>(value)) {
+        std::string result_reg = "%" + std::to_string(symbols.next_reg++);
+        os << "  " << result_reg << " = load " << std::get<std::string>(value) << std::endl;
+        return result_reg;
+    }
+    throw std::runtime_error("Invalid variable type");
 }

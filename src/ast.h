@@ -47,6 +47,7 @@ public:
 class DeclAST : public BaseAST {
 public:
     std::unique_ptr<BaseAST> const_decl;
+    std::unique_ptr<BaseAST> var_decl;
     std::string generate_ir(std::ostream& os, SymbolTable& symbols) const override;
 };
 
@@ -77,6 +78,26 @@ public:
     int evaluate_const(SymbolTable& symbols) const override;
 };
 
+class VarDeclAST : public BaseAST {
+public:
+    std::unique_ptr<BaseAST> b_type;
+    std::vector<std::unique_ptr<BaseAST>> var_defs;
+    std::string generate_ir(std::ostream& os, SymbolTable& symbols) const override;
+};
+
+class VarDefAST : public BaseAST {
+public:
+    std::string ident;
+    std::unique_ptr<BaseAST> init_val;
+    std::string generate_ir(std::ostream& os, SymbolTable& symbols) const override;
+};
+
+class InitValAST : public BaseAST {
+public:
+    std::unique_ptr<BaseAST> exp;
+    std::string generate_ir(std::ostream& os, SymbolTable& symbols) const override;
+};
+
 class BlockAST : public BaseAST {
 public:
     std::vector<std::unique_ptr<BaseAST>> block_items;
@@ -85,7 +106,9 @@ public:
 
 class StmtAST : public BaseAST {
 public:
+    std::unique_ptr<BaseAST> lval;
     std::unique_ptr<BaseAST> exp;
+    bool is_return = false;
     std::string generate_ir(std::ostream& os, SymbolTable& symbols) const override;
 };
 

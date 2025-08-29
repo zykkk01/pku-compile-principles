@@ -47,8 +47,8 @@ using namespace std;
 
 // 非终结符的类型定义
 %type <ast_val> FuncDef FuncType Block Stmt Exp UnaryExp PrimaryExp AddExp MulExp RelExp EqExp LAndExp LOrExp
-%type <ast_val> Decl ConstDecl BType ConstDef ConstInitVal ConstExp LVal BlockItem
-%type <ast_list_val> BlockItemList ConstDefList
+%type <ast_val> Decl ConstDecl BType ConstDef ConstInitVal ConstExp LVal BlockItem VarDecl VarDef InitVal
+%type <ast_list_val> BlockItemList ConstDefList VarDefList
 %type <int_val> Number
 %type <str_val> UnaryOp AddOp MulOp RelOp EqOp
 
@@ -126,6 +126,11 @@ Decl
     ast->const_decl = unique_ptr<BaseAST>($1);
     $$ = ast;
   }
+  | VarDecl {
+    auto ast = new DeclAST();
+    ast->var_decl = unique_ptr<BaseAST>($1);
+    $$ = ast;
+  }
   ;
 
 ConstDecl
@@ -185,10 +190,64 @@ ConstExp
   }
   ;
 
+VarDecl
+  : BType VarDefList ';' {
+    auto ast = new VarDeclAST();
+    ast->b_type = unique_ptr<BaseAST>($1);
+    auto defs = unique_ptr<vector<BaseAST *>>($2);
+    for (auto &def : *defs) {
+      ast->var_defs.emplace_back(def);
+    }
+    $$ = ast;
+  }
+  ;
+
+VarDefList
+  : VarDef {
+    auto list = new vector<BaseAST *>();
+    list->push_back($1);
+    $$ = list;
+  }
+  | VarDefList ',' VarDef {
+    $1->push_back($3);
+    $$ = $1;
+  }
+  ;
+
+VarDef
+  : IDENT {
+    auto ast = new VarDefAST();
+    ast->ident = *unique_ptr<string>($1);
+    $$ = ast;
+  }
+  | IDENT '=' InitVal {
+    auto ast = new VarDefAST();
+    ast->ident = *unique_ptr<string>($1);
+    ast->init_val = unique_ptr<BaseAST>($3);
+    $$ = ast;
+  }
+  ;
+
+InitVal
+  : Exp {
+    auto ast = new InitValAST();
+    ast->exp = unique_ptr<BaseAST>($1);
+    $$ = ast;
+  }
+  ;
+
 Stmt
-  : RETURN Exp ';' {
+  : LVal '=' Exp ';' {
+    auto ast = new StmtAST();
+    ast->lval = unique_ptr<BaseAST>($1);
+    ast->exp = unique_ptr<BaseAST>($3);
+    ast->is_return = false;
+    $$ = ast;
+  }
+  | RETURN Exp ';' {
     auto ast = new StmtAST();
     ast->exp = unique_ptr<BaseAST>($2);
+    ast->is_return = true;
     $$ = ast;
   }
   ;
