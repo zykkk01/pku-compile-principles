@@ -19,22 +19,35 @@ using namespace std;
 extern FILE *yyin;
 extern int yyparse(unique_ptr<BaseAST> &ast);
 
-ofstream ofs;
-int reg_count = 0;
-unordered_map<const void*, int> reg_map;
+static ofstream ofs;
+static unordered_map<const void*, int> value_offsets;
+static int stack_size = 0;
 
 // 函数声明
-void Visit(const koopa_raw_program_t &program);
-void Visit(const koopa_raw_slice_t &slice);
-void Visit(const koopa_raw_function_t &func);
-void Visit(const koopa_raw_basic_block_t &bb);
-void Visit(const koopa_raw_value_t &value);
-void Visit(const koopa_raw_return_t &ret);
-void Visit(const koopa_raw_integer_t &integer);
-void Visit(const koopa_raw_binary_t &binary);
+static void Visit(const koopa_raw_program_t &program);
+static void Visit(const koopa_raw_slice_t &slice);
+static void Visit(const koopa_raw_function_t &func);
+static void Visit(const koopa_raw_basic_block_t &bb);
+static void Visit(const koopa_raw_value_t &value);
+static void LoadValueToRegister(const koopa_raw_value_t &val, const string &reg);
+
+static void CalculateStackSize(const koopa_raw_function_t &func) {
+  stack_size = 0;
+  value_offsets.clear();
+  for (size_t i = 0; i < func->bbs.len; ++i) {
+    auto bb = reinterpret_cast<koopa_raw_basic_block_t>(func->bbs.buffer[i]);
+    for (size_t j = 0; j < bb->insts.len; ++j) {
+      auto inst = reinterpret_cast<koopa_raw_value_t>(bb->insts.buffer[j]);
+      if (inst->ty->tag != KOOPA_RTT_UNIT) {
+        value_offsets[inst] = stack_size;
+        stack_size += 4;
+      }
+    }
+  }
+}
 
 // 访问 raw program
-void Visit(const koopa_raw_program_t &program) {
+static void Visit(const koopa_raw_program_t &program) {
   // 执行一些其他的必要操作
   // ...
   ofs << "  .text" << endl;
@@ -45,7 +58,7 @@ void Visit(const koopa_raw_program_t &program) {
 }
 
 // 访问 raw slice
-void Visit(const koopa_raw_slice_t &slice) {
+static void Visit(const koopa_raw_slice_t &slice) {
   for (size_t i = 0; i < slice.len; ++i) {
     auto ptr = slice.buffer[i];
     // 根据 slice 的 kind 决定将 ptr 视作何种元素
@@ -70,19 +83,31 @@ void Visit(const koopa_raw_slice_t &slice) {
 }
 
 // 访问函数
-void Visit(const koopa_raw_function_t &func) {
+static void Visit(const koopa_raw_function_t &func) {
   // 执行一些其他的必要操作
   // ...
-  reg_count = 0;
-  reg_map.clear();
+  CalculateStackSize(func);
+  
+  int aligned_stack_size = (stack_size + 15) / 16 * 16;
+  if (aligned_stack_size == 0) aligned_stack_size = 16;
+
   ofs << "  .globl " << (func->name + 1) << endl;
   ofs << (func->name + 1) << ":" << endl;
+
+  if (aligned_stack_size > 0) {
+    if (aligned_stack_size <= 2047) {
+      ofs << "  addi sp, sp, " << -aligned_stack_size << endl;
+    } else {
+      ofs << "  li t0, " << -aligned_stack_size << endl;
+      ofs << "  add sp, sp, t0" << endl;
+    }
+  }
   // 访问所有基本块
   Visit(func->bbs);
 }
 
 // 访问基本块
-void Visit(const koopa_raw_basic_block_t &bb) {
+static void Visit(const koopa_raw_basic_block_t &bb) {
   // 执行一些其他的必要操作
   // ...
   // 访问所有指令
@@ -90,22 +115,67 @@ void Visit(const koopa_raw_basic_block_t &bb) {
 }
 
 // 访问指令
-void Visit(const koopa_raw_value_t &value) {
+static void Visit(const koopa_raw_value_t &value) {
   // 根据指令类型判断后续需要如何访问
   const auto &kind = value->kind;
   switch (kind.tag) {
-    case KOOPA_RVT_RETURN:
+    case KOOPA_RVT_RETURN: {
       // 访问 return 指令
-      Visit(kind.data.ret);
+      const auto &ret = kind.data.ret;
+      if (ret.value) {
+        LoadValueToRegister(ret.value, "a0");
+      }
+      int aligned_stack_size = (stack_size + 15) / 16 * 16;
+      if (aligned_stack_size == 0) aligned_stack_size = 16;
+      if (aligned_stack_size > 0) {
+        if (aligned_stack_size <= 2047) {
+          ofs << "  addi sp, sp, " << aligned_stack_size << endl;
+        } else {
+          ofs << "  li t0, " << aligned_stack_size << endl;
+          ofs << "  add sp, sp, t0" << endl;
+        }
+      }
+      ofs << "  ret" << endl;
       break;
-    case KOOPA_RVT_INTEGER:
+    }
+    case KOOPA_RVT_BINARY: {
       // 访问 integer 指令
-      Visit(kind.data.integer);
-      reg_map[value] = reg_map[&kind.data.integer];
+      const auto &binary = kind.data.binary;
+      LoadValueToRegister(binary.lhs, "t0");
+      LoadValueToRegister(binary.rhs, "t1");
+      switch (binary.op) {
+        case KOOPA_RBO_ADD: ofs << "  add t0, t0, t1" << endl; break;
+        case KOOPA_RBO_SUB: ofs << "  sub t0, t0, t1" << endl; break;
+        case KOOPA_RBO_MUL: ofs << "  mul t0, t0, t1" << endl; break;
+        case KOOPA_RBO_DIV: ofs << "  div t0, t0, t1" << endl; break;
+        case KOOPA_RBO_MOD: ofs << "  rem t0, t0, t1" << endl; break;
+        case KOOPA_RBO_EQ: ofs << "  xor t0, t0, t1" << endl; ofs << "  seqz t0, t0" << endl; break;
+        case KOOPA_RBO_NOT_EQ: ofs << "  xor t0, t0, t1" << endl; ofs << "  snez t0, t0" << endl; break;
+        case KOOPA_RBO_GT: ofs << "  sgt t0, t0, t1" << endl; break;
+        case KOOPA_RBO_LT: ofs << "  slt t0, t0, t1" << endl; break;
+        case KOOPA_RBO_GE: ofs << "  slt t0, t0, t1" << endl; ofs << "  seqz t0, t0" << endl; break;
+        case KOOPA_RBO_LE: ofs << "  sgt t0, t0, t1" << endl; ofs << "  seqz t0, t0" << endl; break;
+        case KOOPA_RBO_AND: ofs << "  snez t0, t0" << endl; ofs << "  snez t1, t1" << endl; ofs << "  and t0, t0, t1" << endl; break;
+        case KOOPA_RBO_OR: ofs << "  or t0, t0, t1" << endl; ofs << "  snez t0, t0" << endl; break;
+        default: assert(false);
+      }
+      ofs << "  sw t0, " << value_offsets.at(value) << "(sp)" << endl;
       break;
-    case KOOPA_RVT_BINARY:
-      Visit(kind.data.binary);
-      reg_map[value] = reg_map[&kind.data.binary];
+    }
+    case KOOPA_RVT_LOAD: {
+      const auto &load = kind.data.load;
+      ofs << "  lw t0, " << value_offsets.at(load.src) << "(sp)" << endl;
+      ofs << "  sw t0, " << value_offsets.at(value) << "(sp)" << endl;
+      break;
+    }
+    case KOOPA_RVT_STORE: {
+      const auto &store = kind.data.store;
+      LoadValueToRegister(store.value, "t0");
+      ofs << "  sw t0, " << value_offsets.at(store.dest) << "(sp)" << endl;
+      break;
+    }
+    case KOOPA_RVT_INTEGER:
+    case KOOPA_RVT_ALLOC:
       break;
     default:
       // 其他类型暂时遇不到
@@ -113,101 +183,12 @@ void Visit(const koopa_raw_value_t &value) {
   }
 }
 
-// 访问对应类型指令的函数定义略
-// 视需求自行实现
-// ...
-
-string get_reg_name(int index) {
-  if (index < 7) {
-    return "t" + to_string(index);
+static void LoadValueToRegister(const koopa_raw_value_t &val, const string &reg) {
+  if (val->kind.tag == KOOPA_RVT_INTEGER) {
+    ofs << "  li " << reg << ", " << val->kind.data.integer.value << endl;
   } else {
-    return "a" + to_string(index - 7);
+    ofs << "  lw " << reg << ", " << value_offsets.at(val) << "(sp)" << endl;
   }
-}
-
-void Visit(const koopa_raw_return_t &ret) {
-  Visit(ret.value);
-  ofs << "  mv a0, " << get_reg_name(reg_map[ret.value]) << endl;
-  ofs << "  ret" << endl;
-}
-
-void Visit(const koopa_raw_integer_t &integer) {
-  int32_t value = integer.value;
-  ofs << "  li " << get_reg_name(reg_count) << ", " << value << endl;
-  reg_map[&integer] = reg_count++;
-}
-
-void Visit(const koopa_raw_binary_t &binary) {
-  if (reg_map.count(&binary)) {
-    return;
-  }
-  Visit(binary.lhs);
-  Visit(binary.rhs);
-  int lhs_reg_idx = reg_map[binary.lhs];
-  int rhs_reg_idx = reg_map[binary.rhs];
-  string lhs_reg = get_reg_name(lhs_reg_idx);
-  string rhs_reg = get_reg_name(rhs_reg_idx);
-  
-  int dest_reg_idx;
-  string dest_reg;
-
-  if (binary.lhs->kind.tag == KOOPA_RVT_INTEGER) {
-    dest_reg_idx = rhs_reg_idx;
-  } else if (binary.rhs->kind.tag == KOOPA_RVT_INTEGER) {
-    dest_reg_idx = lhs_reg_idx;
-  } else {
-    dest_reg_idx = lhs_reg_idx;
-  }
-  dest_reg = get_reg_name(dest_reg_idx);
-
-  switch (binary.op) {
-    case KOOPA_RBO_ADD:
-      ofs << "  add " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      break;
-    case KOOPA_RBO_SUB:
-      ofs << "  sub " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      break;
-    case KOOPA_RBO_EQ:
-      ofs << "  xor " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      ofs << "  seqz " << dest_reg << ", " << dest_reg << endl;
-      break;
-    case KOOPA_RBO_MUL:
-      ofs << "  mul " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      break;
-    case KOOPA_RBO_DIV:
-      ofs << "  div " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      break;
-    case KOOPA_RBO_MOD:
-      ofs << "  rem " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      break;
-    case KOOPA_RBO_NOT_EQ:
-      ofs << "  xor " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      ofs << "  snez " << dest_reg << ", " << dest_reg << endl;
-      break;
-    case KOOPA_RBO_GT:
-      ofs << "  sgt " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      break;
-    case KOOPA_RBO_LT:
-      ofs << "  slt " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      break;
-    case KOOPA_RBO_GE:
-      ofs << "  slt " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      ofs << "  seqz " << dest_reg << ", " << dest_reg << endl;
-      break;
-    case KOOPA_RBO_LE:
-      ofs << "  sgt " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      ofs << "  seqz " << dest_reg << ", " << dest_reg << endl;
-      break;
-    case KOOPA_RBO_AND:
-      ofs << "  and " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      break;
-    case KOOPA_RBO_OR:
-      ofs << "  or " << dest_reg << ", " << lhs_reg << ", " << rhs_reg << endl;
-      break;
-    default:
-      assert(false);
-  }
-  reg_map[&binary] = dest_reg_idx;
 }
 
 int main(int argc, const char *argv[]) {
@@ -222,36 +203,34 @@ int main(int argc, const char *argv[]) {
   yyin = fopen(input, "r");
   assert(yyin);
 
-  // parse input file
   unique_ptr<BaseAST> ast;
   auto ret = yyparse(ast);
   assert(!ret);
 
   ofs.open(output);
   if (string(mode) == "-koopa") {
-    // dump AST to Koopa IR
     ofs << *ast;
   } else if (string(mode) == "-riscv") {
-      stringstream ss;
-      ss << *ast;
+    stringstream ss;
+    ss << *ast;
 
-      // 解析字符串 str, 得到 Koopa IR 程序
-      koopa_program_t program;
-      koopa_error_code_t parse_ret = koopa_parse_from_string(ss.str().c_str(), &program);
-      assert(parse_ret == KOOPA_EC_SUCCESS);  // 确保解析时没有出错
-      // 创建一个 raw program builder, 用来构建 raw program
-      koopa_raw_program_builder_t builder = koopa_new_raw_program_builder();
-      // 将 Koopa IR 程序转换为 raw program
-      koopa_raw_program_t raw = koopa_build_raw_program(builder, program);
-      // 释放 Koopa IR 程序占用的内存
-      koopa_delete_program(program);
+    // 解析字符串 str, 得到 Koopa IR 程序
+    koopa_program_t program;
+    koopa_error_code_t parse_ret = koopa_parse_from_string(ss.str().c_str(), &program);
+    assert(parse_ret == KOOPA_EC_SUCCESS);  // 确保解析时没有出错
+    // 创建一个 raw program builder, 用来构建 raw program
+    koopa_raw_program_builder_t builder = koopa_new_raw_program_builder();
+    // 将 Koopa IR 程序转换为 raw program
+    koopa_raw_program_t raw = koopa_build_raw_program(builder, program);
+    // 释放 Koopa IR 程序占用的内存
+    koopa_delete_program(program);
 
-      // 处理 raw program
-      // ...
+    // 处理 raw program
+    // ...
 
-      Visit(raw);
+    Visit(raw);
 
-      // 处理完成, 释放 raw program builder 占用的内存
+    // 处理完成, 释放 raw program builder 占
       // 注意, raw program 中所有的指针指向的内存均为 raw program builder 的内存
       // 所以不要在 raw program 处理完毕之前释放 builder
       koopa_delete_raw_program_builder(builder);
