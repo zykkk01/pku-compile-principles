@@ -244,6 +244,23 @@ Stmt
     ast->is_return = false;
     $$ = ast;
   }
+  | Exp ';' {
+    auto ast = new StmtAST();
+    ast->exp = unique_ptr<BaseAST>($1);
+    ast->is_return = false;
+    $$ = ast;
+  }
+  | ';' {
+    auto ast = new StmtAST();
+    ast->is_return = false;
+    $$ = ast;
+  }
+  | Block {
+    auto ast = new StmtAST();
+    ast->block = unique_ptr<BaseAST>($1);
+    ast->is_return = false;
+    $$ = ast;
+  }
   | RETURN Exp ';' {
     auto ast = new StmtAST();
     ast->exp = unique_ptr<BaseAST>($2);
