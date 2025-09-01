@@ -40,7 +40,7 @@ using namespace std;
 
 // lexer 返回的所有 token 种类的声明
 // 注意 IDENT 和 INT_CONST 会返回 token 的值, 分别对应 str_val 和 int_val
-%token INT RETURN CONST
+%token INT RETURN CONST IF ELSE
 %token <str_val> IDENT
 %token <int_val> INT_CONST
 %token ADD SUB NOT MUL DIV MOD EQ NE GT LT GE LE LAND LOR
@@ -48,6 +48,7 @@ using namespace std;
 // 非终结符的类型定义
 %type <ast_val> FuncDef FuncType Block Stmt Exp UnaryExp PrimaryExp AddExp MulExp RelExp EqExp LAndExp LOrExp
 %type <ast_val> Decl ConstDecl BType ConstDef ConstInitVal ConstExp LVal BlockItem VarDecl VarDef InitVal
+%type <ast_val> MatchedStmt UnmatchedStmt
 %type <ast_list_val> BlockItemList ConstDefList VarDefList
 %type <int_val> Number
 %type <str_val> UnaryOp AddOp MulOp RelOp EqOp
@@ -237,34 +238,57 @@ InitVal
   ;
 
 Stmt
+  : MatchedStmt
+  | UnmatchedStmt
+  ;
+
+MatchedStmt
   : LVal '=' Exp ';' {
     auto ast = new StmtAST();
     ast->lval = unique_ptr<BaseAST>($1);
     ast->exp = unique_ptr<BaseAST>($3);
-    ast->is_return = false;
     $$ = ast;
   }
   | Exp ';' {
     auto ast = new StmtAST();
     ast->exp = unique_ptr<BaseAST>($1);
-    ast->is_return = false;
     $$ = ast;
   }
   | ';' {
-    auto ast = new StmtAST();
-    ast->is_return = false;
-    $$ = ast;
+    $$ = new StmtAST();
   }
   | Block {
     auto ast = new StmtAST();
     ast->block = unique_ptr<BaseAST>($1);
-    ast->is_return = false;
     $$ = ast;
   }
   | RETURN Exp ';' {
     auto ast = new StmtAST();
     ast->exp = unique_ptr<BaseAST>($2);
     ast->is_return = true;
+    $$ = ast;
+  }
+  | IF '(' Exp ')' MatchedStmt ELSE MatchedStmt {
+    auto ast = new StmtAST();
+    ast->cond_exp = unique_ptr<BaseAST>($3);
+    ast->if_stmt = unique_ptr<BaseAST>($5);
+    ast->else_stmt = unique_ptr<BaseAST>($7);
+    $$ = ast;
+  }
+  ;
+
+UnmatchedStmt
+  : IF '(' Exp ')' Stmt {
+    auto ast = new StmtAST();
+    ast->cond_exp = unique_ptr<BaseAST>($3);
+    ast->if_stmt = unique_ptr<BaseAST>($5);
+    $$ = ast;
+  }
+  | IF '(' Exp ')' MatchedStmt ELSE UnmatchedStmt {
+    auto ast = new StmtAST();
+    ast->cond_exp = unique_ptr<BaseAST>($3);
+    ast->if_stmt = unique_ptr<BaseAST>($5);
+    ast->else_stmt = unique_ptr<BaseAST>($7);
     $$ = ast;
   }
   ;
