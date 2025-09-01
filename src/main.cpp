@@ -110,6 +110,9 @@ static void Visit(const koopa_raw_function_t &func) {
 static void Visit(const koopa_raw_basic_block_t &bb) {
   // 执行一些其他的必要操作
   // ...
+  if (string(bb->name + 1) != "entry") {
+    ofs << bb->name + 1<< ":" << endl;
+  }
   // 访问所有指令
   Visit(bb->insts);
 }
@@ -177,6 +180,18 @@ static void Visit(const koopa_raw_value_t &value) {
     case KOOPA_RVT_INTEGER:
     case KOOPA_RVT_ALLOC:
       break;
+    case KOOPA_RVT_BRANCH: {
+      const auto &branch = kind.data.branch;
+      LoadValueToRegister(branch.cond, "t0");
+      ofs << "  bnez t0, " << branch.true_bb->name + 1<< endl;
+      ofs << "  j " << branch.false_bb->name + 1<< endl;
+      break;
+    }
+    case KOOPA_RVT_JUMP: {
+      const auto &jump = kind.data.jump;
+      ofs << "  j " << jump.target->name + 1<< endl;
+      break;
+    }
     default:
       // 其他类型暂时遇不到
       assert(false);
