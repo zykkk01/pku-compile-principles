@@ -267,7 +267,6 @@ IRResult LOrExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) c
         return {final_result_reg, false};
 
     } else {
-        // 基本情况: 表达式不是 A || B 的形式，只是一个 LAndExp
         return land_exp->generate_ir(os, symbols);
     }
 }
@@ -288,7 +287,7 @@ IRResult LAndExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) 
         os << "  br " << lhs_bool << ", %" << eval_rhs_label << ", %" << end_label << std::endl;
 
         os << "%" << eval_rhs_label << ":" << std::endl;
-        auto rhs_res = land_exp->generate_ir(os, symbols);
+        auto rhs_res = eq_exp->generate_ir(os, symbols);
         std::string rhs_bool = "%" + std::to_string(next_reg++);
         os << "  " << rhs_bool << " = ne 0, " << rhs_res.value << std::endl;
         os << "  store " << rhs_bool << ", @" << result_ptr << std::endl;
