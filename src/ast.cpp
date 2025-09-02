@@ -6,7 +6,7 @@
 #include <variant>
 #include <cassert>
 
-int next_reg = 0, if_stmt_count = 0, lor_stmt_count = 0, land_stmt_count = 0;
+int next_reg = 0, if_stmt_count = 0, lor_stmt_count = 0, land_stmt_count = 0, while_stmt_count = 0;
 
 struct IRResult {
     std::string value;
@@ -121,54 +121,74 @@ IRResult BlockAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) co
 }
 
 IRResult StmtAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
-    if (is_return) {
-        auto ret_val = exp->generate_ir(os, symbols);
-        os << "  ret " << ret_val.value << std::endl;
-        return {"", true};
-    } else if (block) {
-        return block->generate_ir(os, symbols);
-    } else if (lval) {
-        auto store_val = exp->generate_ir(os, symbols);
-        if (auto lval_ast = dynamic_cast<LValAST*>(lval.get())) {
-            auto symbol = symbols.lookup_symbol(lval_ast->ident);
-            if (symbol) {
-                 os << "  store " << store_val.value << ", @" << symbol->unique_name << std::endl;
+    switch (type) {
+        case StmtType::RETURN_STMT: {
+            auto ret_val = exp->generate_ir(os, symbols);
+            os << "  ret " << ret_val.value << std::endl;
+            return {"", true};
+        }
+        case StmtType::BLOCK_STMT:
+            return block->generate_ir(os, symbols);
+        case StmtType::ASSIGN_STMT: {
+            auto store_val = exp->generate_ir(os, symbols);
+            if (auto lval_ast = dynamic_cast<LValAST*>(lval.get())) {
+                auto symbol = symbols.lookup_symbol(lval_ast->ident);
+                if (symbol) {
+                     os << "  store " << store_val.value << ", @" << symbol->unique_name << std::endl;
+                }
             }
+            break;
         }
-    } else if (exp) {
-        exp->generate_ir(os, symbols);
-    } else if (cond_exp) {
-        int current_if_id = if_stmt_count++;
-        std::string then_label = "then_" + std::to_string(current_if_id);
-        std::string else_label = "else_" + std::to_string(current_if_id);
-        std::string endif_label = "if_end_" + std::to_string(current_if_id);
-
-        auto cond_val = cond_exp->generate_ir(os, symbols);
-        os << "  br " << cond_val.value << ", %" << then_label << ", %" << (else_stmt ? else_label : endif_label) << std::endl;
-
-        os << "%" << then_label << ":" << std::endl;
-        IRResult if_res;
-        if (if_stmt) {
-            if_res = if_stmt->generate_ir(os, symbols);
-        }
-        if (!if_res.is_terminated) {
-            os << "  jump %" << endif_label << std::endl;
-        }
-
-        IRResult else_res;
-        if (else_stmt) {
-            os << "%" << else_label << ":" << std::endl;
-            else_res = else_stmt->generate_ir(os, symbols);
-            if (!else_res.is_terminated) {
+        case StmtType::EXPRESSION_STMT:
+            exp->generate_ir(os, symbols);
+            break;
+        case StmtType::EMPTY_STMT:
+            break;
+        case StmtType::IF_STMT: {
+            int current_if_id = if_stmt_count++;
+            std::string then_label = "then_" + std::to_string(current_if_id);
+            std::string else_label = "else_" + std::to_string(current_if_id);
+            std::string endif_label = "if_end_" + std::to_string(current_if_id);
+            auto cond_val = cond_exp->generate_ir(os, symbols);
+            os << "  br " << cond_val.value << ", %" << then_label << ", %" << (else_stmt ? else_label : endif_label) << std::endl;
+            os << "%" << then_label << ":" << std::endl;
+            IRResult if_res = if_stmt->generate_ir(os, symbols);
+            if (!if_res.is_terminated) {
                 os << "  jump %" << endif_label << std::endl;
             }
+            IRResult else_res;
+            if (else_stmt) {
+                os << "%" << else_label << ":" << std::endl;
+                else_res = else_stmt->generate_ir(os, symbols);
+                if (!else_res.is_terminated) {
+                    os << "  jump %" << endif_label << std::endl;
+                }
+            }
+            bool terminated = if_res.is_terminated && (else_stmt ? else_res.is_terminated : false);
+            if (!terminated) {
+                os << "%" << endif_label << ":" << std::endl;
+            }
+            return {"", terminated};
         }
-        
-        bool terminated = if_res.is_terminated && else_res.is_terminated;
-        if (!terminated) {
-            os << "%" << endif_label << ":" << std::endl;
+        case StmtType::WHILE_STMT: {
+            int current_while_id = while_stmt_count++;
+            std::string entry_label = "while_entry_" + std::to_string(current_while_id);
+            std::string body_label = "while_body_" + std::to_string(current_while_id);
+            std::string endwhile_label = "while_end_" + std::to_string(current_while_id);
+            os << "  jump %" << entry_label << std::endl;
+            os << "%" << entry_label << ":" << std::endl;
+            auto cond_val = cond_exp->generate_ir(os, symbols);
+            os << "  br " << cond_val.value << ", %" << body_label << ", %" << endwhile_label << std::endl;
+            os << "%" << body_label << ":" << std::endl;
+            auto body_res = while_stmt->generate_ir(os, symbols);
+            if (!body_res.is_terminated) {
+                os << "  jump %" << entry_label << std::endl;
+            }
+            os << "%" << endwhile_label << ":" << std::endl;
+            return {"", false};
         }
-        return {"", terminated};
+        default:
+            assert(false);
     }
     return {};
 }

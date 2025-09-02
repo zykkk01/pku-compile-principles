@@ -11,6 +11,15 @@ extern int var_count;
 struct IRResult;
 class SymbolTableManager;
 class SymbolTable;
+typedef enum {
+    ASSIGN_STMT,
+    EXPRESSION_STMT,
+    EMPTY_STMT,
+    BLOCK_STMT,
+    IF_STMT,
+    WHILE_STMT,
+    RETURN_STMT
+} StmtType;
 
 // 所有 AST 的基类
 class BaseAST {
@@ -109,13 +118,14 @@ public:
 
 class StmtAST : public BaseAST {
 public:
+    StmtType type;
     std::unique_ptr<BaseAST> lval;
     std::unique_ptr<BaseAST> exp;
     std::unique_ptr<BaseAST> block;
-    bool is_return = false;
     std::unique_ptr<BaseAST> cond_exp;
     std::unique_ptr<BaseAST> if_stmt;
     std::unique_ptr<BaseAST> else_stmt;
+    std::unique_ptr<BaseAST> while_stmt;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
 };
 
