@@ -6,10 +6,10 @@
 #include <variant>
 #include <cassert>
 
-int next_reg = 0, if_stmt_count = 0;
+int next_reg = 0, if_stmt_count = 0, lor_stmt_count = 0, land_stmt_count = 0;
 
 struct IRResult {
-    std::string result;
+    std::string value;
     bool is_terminated = false;
 };
 
@@ -123,7 +123,7 @@ IRResult BlockAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) co
 IRResult StmtAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     if (is_return) {
         auto ret_val = exp->generate_ir(os, symbols);
-        os << "  ret " << ret_val.result << std::endl;
+        os << "  ret " << ret_val.value << std::endl;
         return {"", true};
     } else if (block) {
         return block->generate_ir(os, symbols);
@@ -132,20 +132,20 @@ IRResult StmtAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) con
         if (auto lval_ast = dynamic_cast<LValAST*>(lval.get())) {
             auto symbol = symbols.lookup_symbol(lval_ast->ident);
             if (symbol) {
-                 os << "  store " << store_val.result << ", @" << symbol->unique_name << std::endl;
+                 os << "  store " << store_val.value << ", @" << symbol->unique_name << std::endl;
             }
         }
     } else if (exp) {
         exp->generate_ir(os, symbols);
     } else if (cond_exp) {
         int current_if_id = if_stmt_count++;
-        std::string then_label = "then" + std::to_string(current_if_id);
-        std::string else_label = "else" + std::to_string(current_if_id);
-        std::string endif_label = "endif" + std::to_string(current_if_id);
+        std::string then_label = "then_" + std::to_string(current_if_id);
+        std::string else_label = "else_" + std::to_string(current_if_id);
+        std::string endif_label = "if_end_" + std::to_string(current_if_id);
 
         auto cond_val = cond_exp->generate_ir(os, symbols);
-        os << "  br " << cond_val.result << ", %" << then_label << ", %" << (else_stmt ? else_label : endif_label) << std::endl;
-        
+        os << "  br " << cond_val.value << ", %" << then_label << ", %" << (else_stmt ? else_label : endif_label) << std::endl;
+
         os << "%" << then_label << ":" << std::endl;
         IRResult if_res;
         if (if_stmt) {
@@ -194,11 +194,11 @@ IRResult UnaryExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols)
         auto operand = unary_exp->generate_ir(os, symbols);
         std::string result_reg = "%" + std::to_string(next_reg++);
         if (unary_op == "+") {
-            os << "  " << result_reg << " = add 0, " << operand.result << std::endl;
+            os << "  " << result_reg << " = add 0, " << operand.value << std::endl;
         } else if (unary_op == "-") {
-            os << "  " << result_reg << " = sub 0, " << operand.result << std::endl;
+            os << "  " << result_reg << " = sub 0, " << operand.value << std::endl;
         } else if (unary_op == "!") {
-            os << "  " << result_reg << " = eq 0, " << operand.result << std::endl;
+            os << "  " << result_reg << " = eq 0, " << operand.value << std::endl;
         }
         return {result_reg, false};
     }
@@ -210,9 +210,9 @@ IRResult AddExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) c
         auto rhs = mul_exp->generate_ir(os, symbols);
         std::string result_reg = "%" + std::to_string(next_reg++);
         if (add_op == "+") {
-            os << "  " << result_reg << " = add " << lhs.result << ", " << rhs.result << std::endl;
+            os << "  " << result_reg << " = add " << lhs.value << ", " << rhs.value << std::endl;
         } else if (add_op == "-") {
-            os << "  " << result_reg << " = sub " << lhs.result << ", " << rhs.result << std::endl;
+            os << "  " << result_reg << " = sub " << lhs.value << ", " << rhs.value << std::endl;
         }
         return {result_reg, false};
     } else {
@@ -226,11 +226,11 @@ IRResult MulExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) c
         auto rhs = unary_exp->generate_ir(os, symbols);
         std::string result_reg = "%" + std::to_string(next_reg++);
         if (mul_op == "*") {
-            os << "  " << result_reg << " = mul " << lhs.result << ", " << rhs.result << std::endl;
+            os << "  " << result_reg << " = mul " << lhs.value << ", " << rhs.value << std::endl;
         } else if (mul_op == "/") {
-            os << "  " << result_reg << " = div " << lhs.result << ", " << rhs.result << std::endl;
+            os << "  " << result_reg << " = div " << lhs.value << ", " << rhs.value << std::endl;
         } else if (mul_op == "%") {
-            os << "  " << result_reg << " = mod " << lhs.result << ", " << rhs.result << std::endl;
+            os << "  " << result_reg << " = mod " << lhs.value << ", " << rhs.value << std::endl;
         }
         return {result_reg, false};
     } else {
@@ -240,37 +240,65 @@ IRResult MulExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) c
 
 IRResult LOrExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     if (lor_exp) {
-        auto lhs = lor_exp->generate_ir(os, symbols);
-        auto rhs = land_exp->generate_ir(os, symbols);
+        int current_id = lor_stmt_count++;
+        std::string eval_rhs_label = "lor_eval_rhs_" + std::to_string(current_id);
+        std::string end_label = "lor_end_" + std::to_string(current_id);
         
-        std::string lhs_bool = "%" + std::to_string(next_reg++);
-        os << "  " << lhs_bool << " = ne 0, " << lhs.result << std::endl;
-        
-        std::string rhs_bool = "%" + std::to_string(next_reg++);
-        os << "  " << rhs_bool << " = ne 0, " << rhs.result << std::endl;
+        std::string result_ptr = "lor_res_" + std::to_string(current_id);
+        os << "  @" << result_ptr << " = alloc i32" << std::endl;
+        os << "  store 1, @" << result_ptr << std::endl;
 
-        std::string result_reg = "%" + std::to_string(next_reg++);
-        os << "  " << result_reg << " = or " << lhs_bool << ", " << rhs_bool << std::endl;
-        return {result_reg, false};
+        auto lhs_res = lor_exp->generate_ir(os, symbols);
+        std::string lhs_bool = "%" + std::to_string(next_reg++);
+        os << "  " << lhs_bool << " = ne 0, " << lhs_res.value << std::endl;
+        os << "  br " << lhs_bool << ", %" << end_label << ", %" << eval_rhs_label << std::endl;
+
+        os << "%" << eval_rhs_label << ":" << std::endl;
+        auto rhs_res = land_exp->generate_ir(os, symbols);
+        std::string rhs_bool = "%" + std::to_string(next_reg++);
+        os << "  " << rhs_bool << " = ne 0, " << rhs_res.value << std::endl;
+        os << "  store " << rhs_bool << ", @" << result_ptr << std::endl;
+        os << "  jump %" << end_label << std::endl;
+
+        os << "%" << end_label << ":" << std::endl;
+        std::string final_result_reg = "%" + std::to_string(next_reg++);
+        os << "  " << final_result_reg << " = load @" << result_ptr << std::endl;
+
+        return {final_result_reg, false};
+
     } else {
+        // 基本情况: 表达式不是 A || B 的形式，只是一个 LAndExp
         return land_exp->generate_ir(os, symbols);
     }
 }
 
 IRResult LAndExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     if (land_exp) {
-        auto lhs = land_exp->generate_ir(os, symbols);
-        auto rhs = eq_exp->generate_ir(os, symbols);
+        int current_id = land_stmt_count++;
+        std::string eval_rhs_label = "land_eval_rhs_" + std::to_string(current_id);
+        std::string end_label = "land_end_" + std::to_string(current_id);
 
+        std::string result_ptr = "land_res_" + std::to_string(current_id);
+        os << "  @" << result_ptr << " = alloc i32" << std::endl;
+        os << "  store 0, @" << result_ptr << std::endl;
+
+        auto lhs_res = land_exp->generate_ir(os, symbols);
         std::string lhs_bool = "%" + std::to_string(next_reg++);
-        os << "  " << lhs_bool << " = ne 0, " << lhs.result << std::endl;
-        
-        std::string rhs_bool = "%" + std::to_string(next_reg++);
-        os << "  " << rhs_bool << " = ne 0, " << rhs.result << std::endl;
+        os << "  " << lhs_bool << " = ne 0, " << lhs_res.value << std::endl;
+        os << "  br " << lhs_bool << ", %" << eval_rhs_label << ", %" << end_label << std::endl;
 
-        std::string result_reg = "%" + std::to_string(next_reg++);
-        os << "  " << result_reg << " = and " << lhs_bool << ", " << rhs_bool << std::endl;
-        return {result_reg, false};
+        os << "%" << eval_rhs_label << ":" << std::endl;
+        auto rhs_res = land_exp->generate_ir(os, symbols);
+        std::string rhs_bool = "%" + std::to_string(next_reg++);
+        os << "  " << rhs_bool << " = ne 0, " << rhs_res.value << std::endl;
+        os << "  store " << rhs_bool << ", @" << result_ptr << std::endl;
+        os << "  jump %" << end_label << std::endl;
+
+        os << "%" << end_label << ":" << std::endl;
+        std::string final_result_reg = "%" + std::to_string(next_reg++);
+        os << "  " << final_result_reg << " = load @" << result_ptr << std::endl;
+
+        return {final_result_reg, false};
     } else {
         return eq_exp->generate_ir(os, symbols);
     }
@@ -282,9 +310,9 @@ IRResult EqExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) co
         auto rhs = rel_exp->generate_ir(os, symbols);
         std::string result_reg = "%" + std::to_string(next_reg++);
         if (eq_op == "==") {
-            os << "  " << result_reg << " = eq " << lhs.result << ", " << rhs.result << std::endl;
+            os << "  " << result_reg << " = eq " << lhs.value << ", " << rhs.value << std::endl;
         } else if (eq_op == "!=") {
-            os << "  " << result_reg << " = ne " << lhs.result << ", " << rhs.result << std::endl;
+            os << "  " << result_reg << " = ne " << lhs.value << ", " << rhs.value << std::endl;
         }
         return {result_reg, false};
     } else {
@@ -298,13 +326,13 @@ IRResult RelExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) c
         auto rhs = add_exp->generate_ir(os, symbols);
         std::string result_reg = "%" + std::to_string(next_reg++);
         if (rel_op == "<") {
-            os << "  " << result_reg << " = lt " << lhs.result << ", " << rhs.result << std::endl;
+            os << "  " << result_reg << " = lt " << lhs.value << ", " << rhs.value << std::endl;
         } else if (rel_op == ">") {
-            os << "  " << result_reg << " = gt " << lhs.result << ", " << rhs.result << std::endl;
+            os << "  " << result_reg << " = gt " << lhs.value << ", " << rhs.value << std::endl;
         } else if (rel_op == "<=") {
-            os << "  " << result_reg << " = le " << lhs.result << ", " << rhs.result << std::endl;
+            os << "  " << result_reg << " = le " << lhs.value << ", " << rhs.value << std::endl;
         } else if (rel_op == ">=") {
-            os << "  " << result_reg << " = ge " << lhs.result << ", " << rhs.result << std::endl;
+            os << "  " << result_reg << " = ge " << lhs.value << ", " << rhs.value << std::endl;
         }
         return {result_reg, false};
     } else {
@@ -365,7 +393,7 @@ IRResult VarDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) c
     os << "  @" << new_symbol->unique_name << " = alloc i32" << std::endl;
     if (init_val) {
         auto store_val = init_val->generate_ir(os, symbols);
-        os << "  store " << store_val.result << ", @" << new_symbol->unique_name << std::endl;
+        os << "  store " << store_val.value << ", @" << new_symbol->unique_name << std::endl;
     }
     return {};
 }
