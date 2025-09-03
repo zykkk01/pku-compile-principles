@@ -10,7 +10,6 @@ extern int var_count;
 
 struct IRResult;
 class SymbolTableManager;
-class SymbolTable;
 typedef enum {
     ASSIGN_STMT,
     EXPRESSION_STMT,
@@ -18,6 +17,8 @@ typedef enum {
     BLOCK_STMT,
     IF_STMT,
     WHILE_STMT,
+    BREAK_STMT,
+    CONTINUE_STMT,
     RETURN_STMT
 } StmtType;
 

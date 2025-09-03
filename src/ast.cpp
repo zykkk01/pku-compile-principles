@@ -20,9 +20,13 @@ struct SymbolInfo {
     bool is_const;
 };
 
-class SymbolTable {
-public:
+struct SymbolTable {
     std::unordered_map<std::string, SymbolInfo> var_table;
+};
+
+struct LoopContext {
+    std::string break_label;
+    std::string continue_label;
 };
 
 class SymbolTableManager {
@@ -72,9 +76,35 @@ public:
         return nullptr;
     }
 
+    void enter_loop(const std::string& entry_label, const std::string& exit_label) {
+        loop_stack.push_back({exit_label, entry_label});
+    }
+
+    void exit_loop() {
+        if (loop_stack.empty()) {
+            throw std::runtime_error("No loop to exit");
+        }
+        loop_stack.pop_back();
+    }
+
+    std::string get_break_label() const {
+        if (loop_stack.empty()) {
+            throw std::runtime_error("No loop to get break label");
+        }
+        return loop_stack.back().break_label;
+    }
+
+    std::string get_continue_label() const {
+        if (loop_stack.empty()) {
+            throw std::runtime_error("No loop to get continue label");
+        }
+        return loop_stack.back().continue_label;
+    }
+
 private:
     std::vector<std::unique_ptr<SymbolTable>> table_stack;
     std::unordered_map<std::string, int> symbol_counter;
+    std::vector<LoopContext> loop_stack;
 };
 
 std::ostream& operator<<(std::ostream& os, const BaseAST& ast) {
@@ -180,13 +210,21 @@ IRResult StmtAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) con
             auto cond_val = cond_exp->generate_ir(os, symbols);
             os << "  br " << cond_val.value << ", %" << body_label << ", %" << endwhile_label << std::endl;
             os << "%" << body_label << ":" << std::endl;
+            symbols.enter_loop(entry_label, endwhile_label);
             auto body_res = while_stmt->generate_ir(os, symbols);
+            symbols.exit_loop();
             if (!body_res.is_terminated) {
                 os << "  jump %" << entry_label << std::endl;
             }
             os << "%" << endwhile_label << ":" << std::endl;
             return {"", false};
         }
+        case StmtType::BREAK_STMT:
+            os << "  jump %" << symbols.get_break_label() << std::endl;
+            return {"", true};
+        case StmtType::CONTINUE_STMT:
+            os << "  jump %" << symbols.get_continue_label() << std::endl;
+            return {"", true};
         default:
             assert(false);
     }
