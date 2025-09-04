@@ -22,7 +22,6 @@ typedef enum {
     RETURN_STMT
 } StmtType;
 
-// 所有 AST 的基类
 class BaseAST {
 public:
     virtual ~BaseAST() = default;
@@ -34,18 +33,17 @@ public:
     friend std::ostream& operator<<(std::ostream& os, const BaseAST& ast);
 };
 
-// CompUnit 是 BaseAST
 class CompUnitAST : public BaseAST {
 public:
-    std::unique_ptr<BaseAST> func_def;
+    std::vector<std::unique_ptr<BaseAST>> func_defs;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
 };
 
-// FuncDef 也是 BaseAST
 class FuncDefAST : public BaseAST {
 public:
     std::unique_ptr<BaseAST> func_type;
     std::string ident;
+    std::vector<std::unique_ptr<BaseAST>> func_f_params;
     std::unique_ptr<BaseAST> block;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
 };
@@ -53,6 +51,13 @@ public:
 class FuncTypeAST : public BaseAST {
 public:
     std::string type;
+    IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
+};
+
+class FuncFParamAST : public BaseAST {
+public:
+    std::unique_ptr<BaseAST> b_type;
+    std::string ident;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
 };
 
@@ -113,7 +118,6 @@ public:
 class BlockAST : public BaseAST {
 public:
     std::vector<std::unique_ptr<BaseAST>> block_items;
-    
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
 };
 
@@ -165,6 +169,8 @@ public:
     std::unique_ptr<BaseAST> primary_exp;
     std::unique_ptr<BaseAST> unary_exp;
     std::string unary_op;
+    std::string ident;
+    std::vector<std::unique_ptr<BaseAST>> func_r_params;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
     int evaluate_const(SymbolTableManager& symbols) const override;
 };

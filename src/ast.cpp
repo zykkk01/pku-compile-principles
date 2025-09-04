@@ -13,11 +13,18 @@ struct IRResult {
     bool is_terminated = false;
 };
 
+typedef enum {
+    VAR_SYMBOL,
+    FUNC_SYMBOL
+} SymbolKind;
+
 struct SymbolInfo {
     std::string name;
     std::string unique_name;
     int value;
     bool is_const;
+    SymbolKind kind;
+    std::string type;
 };
 
 struct SymbolTable {
@@ -61,7 +68,12 @@ public:
         if (current_scope->var_table.count(symbol.name)) {
             return false;
         }
-        symbol.unique_name = symbol.name + "_" + std::to_string(symbol_counter[symbol.name]++);
+        int count = symbol_counter[symbol.name]++;
+        if (count == 0) {
+            symbol.unique_name = symbol.name;
+        } else {
+            symbol.unique_name = symbol.name + "_" + std::to_string(count);
+        }
         current_scope->var_table[symbol.name] = symbol;
         return true;
     }
@@ -114,25 +126,70 @@ std::ostream& operator<<(std::ostream& os, const BaseAST& ast) {
 }
 
 IRResult CompUnitAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
-    return func_def->generate_ir(os, symbols);
+    for (const auto& func_def : func_defs) {
+        func_def->generate_ir(os, symbols);
+    }
+    return {"", true};
 }
 
 IRResult FuncDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
-    os << "fun @" << ident << "(): ";
+    next_reg = 0;
+    if_stmt_count = 0;
+    lor_stmt_count = 0;
+    land_stmt_count = 0;
+    while_stmt_count = 0;
+
+    auto func_type_str = dynamic_cast<FuncTypeAST*>(func_type.get())->type;
+    SymbolInfo symbol = {ident, "", 0, false, FUNC_SYMBOL, func_type_str};
+    symbols.add_symbol(symbol);
+    os << "fun @" << symbol.unique_name << "(";
+    symbols.enter_scope();
+    std::vector<std::string> param_names;
+    for (size_t i = 0; i < func_f_params.size(); ++i) {
+        auto param = dynamic_cast<FuncFParamAST*>(func_f_params[i].get());
+        SymbolInfo param_symbol = {param->ident, "", 0, false, VAR_SYMBOL, "int"};
+        symbols.add_symbol(param_symbol);
+        param_names.push_back(param_symbol.unique_name);
+        os << "%" << param_symbol.unique_name << ": ";
+        param->b_type->generate_ir(os, symbols);
+        if (i < func_f_params.size() - 1) {
+            os << ", ";
+        }
+    }
+    os << ")";
     func_type->generate_ir(os, symbols);
-    os << "{" << std::endl;
+    os << " {" << std::endl;
     os << "%entry:" << std::endl;
-    block->generate_ir(os, symbols);
+
+    for (const auto& param_name : param_names) {
+        os << "  @" << param_name << " = alloc i32" << std::endl;
+        os << "  store %" << param_name << ", @" << param_name << std::endl;
+    }
+
+    auto block_res = block->generate_ir(os, symbols);
+    if (!block_res.is_terminated) {
+        if (dynamic_cast<FuncTypeAST*>(func_type.get())->type == "int") {
+            os << "  ret 0" << std::endl;
+        } else {
+            os << "  ret" << std::endl;
+        }
+    }
     os << "}" << std::endl;
+    symbols.exit_scope();
     return {"", true};
 }
 
 IRResult FuncTypeAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     if (type == "int") {
-        os << "i32 ";
+        os << ": i32";
+    } else if (type == "void") {
     } else {
-        os << "unknown ";
+        os << ": unknown";
     }
+    return {};
+}
+
+IRResult FuncFParamAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     return {};
 }
 
@@ -153,8 +210,12 @@ IRResult BlockAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) co
 IRResult StmtAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     switch (type) {
         case StmtType::RETURN_STMT: {
-            auto ret_val = exp->generate_ir(os, symbols);
-            os << "  ret " << ret_val.value << std::endl;
+            if (exp) {
+                auto ret_val = exp->generate_ir(os, symbols);
+                os << "  ret " << ret_val.value << std::endl;
+            } else {
+                os << "  ret" << std::endl;
+            }
             return {"", true};
         }
         case StmtType::BLOCK_STMT:
@@ -170,7 +231,7 @@ IRResult StmtAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) con
             break;
         }
         case StmtType::EXPRESSION_STMT:
-            exp->generate_ir(os, symbols);
+            if(exp) exp->generate_ir(os, symbols);
             break;
         case StmtType::EMPTY_STMT:
             break;
@@ -248,7 +309,7 @@ IRResult PrimaryExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbol
 IRResult UnaryExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     if (primary_exp) {
         return primary_exp->generate_ir(os, symbols);
-    } else {
+    } else if (unary_exp) { 
         auto operand = unary_exp->generate_ir(os, symbols);
         std::string result_reg = "%" + std::to_string(next_reg++);
         if (unary_op == "+") {
@@ -259,6 +320,37 @@ IRResult UnaryExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols)
             os << "  " << result_reg << " = eq 0, " << operand.value << std::endl;
         }
         return {result_reg, false};
+    } else {
+        std::vector<std::string> param_values;
+        for (auto& param : func_r_params) {
+            auto param_res = param->generate_ir(os, symbols);
+            param_values.push_back(param_res.value);
+        }
+        SymbolInfo* func_symbol = symbols.lookup_symbol(ident);
+        if (!func_symbol) {
+            throw std::runtime_error("Undefined function: " + ident);
+        }
+        if (func_symbol->kind != FUNC_SYMBOL) {
+             throw std::runtime_error(ident + " is not a function");
+        }
+
+        std::string call_instruction = "call @" + func_symbol->unique_name + "(";
+        for (size_t i = 0; i < param_values.size(); ++i) {
+            call_instruction += param_values[i];
+            if (i < param_values.size() - 1) {
+                call_instruction += ", ";
+            }
+        }
+        call_instruction += ")";
+
+        if (func_symbol->type != "void") {
+            std::string result_reg = "%" + std::to_string(next_reg++);
+            os << "  " << result_reg << " = " << call_instruction << std::endl;
+            return {result_reg, false};
+        } else {
+            os << "  " << call_instruction << std::endl;
+            return {"", false};
+        }
     }
 }
 
@@ -299,28 +391,28 @@ IRResult MulExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) c
 IRResult LOrExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     if (lor_exp) {
         int current_id = lor_stmt_count++;
-        std::string eval_rhs_label = "lor_eval_rhs_" + std::to_string(current_id);
-        std::string end_label = "lor_end_" + std::to_string(current_id);
+        std::string eval_rhs_label = "%lor_eval_rhs_" + std::to_string(current_id);
+        std::string end_label = "%lor_end_" + std::to_string(current_id);
         
-        std::string result_ptr = "lor_res_" + std::to_string(current_id);
-        os << "  @" << result_ptr << " = alloc i32" << std::endl;
-        os << "  store 1, @" << result_ptr << std::endl;
+        std::string result_ptr = "%lor_res_" + std::to_string(current_id);
+        os << "  " << result_ptr << " = alloc i32" << std::endl;
+        os << "  store 1, " << result_ptr << std::endl;
 
         auto lhs_res = lor_exp->generate_ir(os, symbols);
         std::string lhs_bool = "%" + std::to_string(next_reg++);
         os << "  " << lhs_bool << " = ne 0, " << lhs_res.value << std::endl;
-        os << "  br " << lhs_bool << ", %" << end_label << ", %" << eval_rhs_label << std::endl;
+        os << "  br " << lhs_bool << ", " << end_label << ", " << eval_rhs_label << std::endl;
 
-        os << "%" << eval_rhs_label << ":" << std::endl;
+        os << eval_rhs_label << ":" << std::endl;
         auto rhs_res = land_exp->generate_ir(os, symbols);
         std::string rhs_bool = "%" + std::to_string(next_reg++);
         os << "  " << rhs_bool << " = ne 0, " << rhs_res.value << std::endl;
-        os << "  store " << rhs_bool << ", @" << result_ptr << std::endl;
-        os << "  jump %" << end_label << std::endl;
+        os << "  store " << rhs_bool << ", " << result_ptr << std::endl;
+        os << "  jump " << end_label << std::endl;
 
-        os << "%" << end_label << ":" << std::endl;
+        os << end_label << ":" << std::endl;
         std::string final_result_reg = "%" + std::to_string(next_reg++);
-        os << "  " << final_result_reg << " = load @" << result_ptr << std::endl;
+        os << "  " << final_result_reg << " = load " << result_ptr << std::endl;
 
         return {final_result_reg, false};
 
@@ -332,28 +424,28 @@ IRResult LOrExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) c
 IRResult LAndExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     if (land_exp) {
         int current_id = land_stmt_count++;
-        std::string eval_rhs_label = "land_eval_rhs_" + std::to_string(current_id);
-        std::string end_label = "land_end_" + std::to_string(current_id);
+        std::string eval_rhs_label = "%land_eval_rhs_" + std::to_string(current_id);
+        std::string end_label = "%land_end_" + std::to_string(current_id);
 
-        std::string result_ptr = "land_res_" + std::to_string(current_id);
-        os << "  @" << result_ptr << " = alloc i32" << std::endl;
-        os << "  store 0, @" << result_ptr << std::endl;
+        std::string result_ptr = "%land_res_" + std::to_string(current_id);
+        os << "  " << result_ptr << " = alloc i32" << std::endl;
+        os << "  store 0, " << result_ptr << std::endl;
 
         auto lhs_res = land_exp->generate_ir(os, symbols);
         std::string lhs_bool = "%" + std::to_string(next_reg++);
         os << "  " << lhs_bool << " = ne 0, " << lhs_res.value << std::endl;
-        os << "  br " << lhs_bool << ", %" << eval_rhs_label << ", %" << end_label << std::endl;
+        os << "  br " << lhs_bool << ", " << eval_rhs_label << ", " << end_label << std::endl;
 
-        os << "%" << eval_rhs_label << ":" << std::endl;
+        os << eval_rhs_label << ":" << std::endl;
         auto rhs_res = eq_exp->generate_ir(os, symbols);
         std::string rhs_bool = "%" + std::to_string(next_reg++);
         os << "  " << rhs_bool << " = ne 0, " << rhs_res.value << std::endl;
-        os << "  store " << rhs_bool << ", @" << result_ptr << std::endl;
-        os << "  jump %" << end_label << std::endl;
+        os << "  store " << rhs_bool << ", " << result_ptr << std::endl;
+        os << "  jump " << end_label << std::endl;
 
-        os << "%" << end_label << ":" << std::endl;
+        os << end_label << ":" << std::endl;
         std::string final_result_reg = "%" + std::to_string(next_reg++);
-        os << "  " << final_result_reg << " = load @" << result_ptr << std::endl;
+        os << "  " << final_result_reg << " = load " << result_ptr << std::endl;
 
         return {final_result_reg, false};
     } else {
@@ -415,7 +507,7 @@ IRResult ConstDeclAST::generate_ir(std::ostream& os, SymbolTableManager& symbols
 
 IRResult ConstDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     int val = const_init_val->evaluate_const(symbols);
-    SymbolInfo symbol = {ident, "", val, true};
+    SymbolInfo symbol = {ident, "", val, true, VAR_SYMBOL, "int"};
     symbols.add_symbol(symbol);
     return {};
 }
@@ -444,13 +536,12 @@ IRResult VarDeclAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) 
 }
 
 IRResult VarDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
-    SymbolInfo symbol = {ident, "", 0, false};
+    SymbolInfo symbol = {ident, "", 0, false, VAR_SYMBOL, "int"};
     symbols.add_symbol(symbol);
-    auto new_symbol = symbols.lookup_symbol(ident);
-    os << "  @" << new_symbol->unique_name << " = alloc i32" << std::endl;
+    os << "  @" << symbol.unique_name << " = alloc i32" << std::endl;
     if (init_val) {
         auto store_val = init_val->generate_ir(os, symbols);
-        os << "  store " << store_val.value << ", @" << new_symbol->unique_name << std::endl;
+        os << "  store " << store_val.value << ", @" << symbol.unique_name << std::endl;
     }
     return {};
 }
@@ -472,11 +563,13 @@ int PrimaryExpAST::evaluate_const(SymbolTableManager& symbols) const {
 int UnaryExpAST::evaluate_const(SymbolTableManager& symbols) const {
     if (primary_exp) {
         return primary_exp->evaluate_const(symbols);
-    } else {
+    } else if (unary_exp) {
         int val = unary_exp->evaluate_const(symbols);
         if (unary_op == "+") return val;
         if (unary_op == "-") return -val;
         if (unary_op == "!") return !val;
+    } else {
+        throw std::logic_error("Cannot evaluate function call in constant expression");
     }
     return 0;
 }
@@ -571,7 +664,12 @@ int ConstExpAST::evaluate_const(SymbolTableManager& symbols) const {
 }
 
 IRResult BTypeAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
-    return {};
+    if (type == "int") {
+        os << "i32";
+    } else {
+        os << "unknown";
+    }
+    return {"", false};
 }
 
 IRResult LValAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
