@@ -126,8 +126,33 @@ std::ostream& operator<<(std::ostream& os, const BaseAST& ast) {
 }
 
 IRResult CompUnitAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
+    os << R"(decl @getint(): i32
+decl @getch(): i32
+decl @getarray(*i32): i32
+decl @putint(i32)
+decl @putch(i32)
+decl @putarray(i32, *i32)
+decl @starttime()
+decl @stoptime()
+
+)";
+    for (const auto& [name, type] : {
+        std::pair{"getint", "int"},
+        {"getch", "int"},
+        {"getarray", "int"},
+        {"putint", "void"},
+        {"putch", "void"},
+        {"putarray", "void"},
+        {"starttime", "void"},
+        {"stoptime", "void"}
+    }) {
+        SymbolInfo symbol = {name, "", 0, false, FUNC_SYMBOL, type};
+        symbols.add_symbol(symbol);
+    }
+
     for (const auto& func_def : func_defs) {
         func_def->generate_ir(os, symbols);
+        os << std::endl;
     }
     return {"", true};
 }
