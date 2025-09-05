@@ -102,6 +102,7 @@ static void Visit(const koopa_raw_slice_t &slice) {
 }
 
 static void Visit(const koopa_raw_function_t &func) {
+  if (func->bbs.len == 0) return;
   current_func_name = string(func->name + 1);
   CalculateStackSize(func);
 
