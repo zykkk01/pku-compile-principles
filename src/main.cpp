@@ -44,6 +44,7 @@ static void Visit(const koopa_raw_function_t &func);
 static void Visit(const koopa_raw_basic_block_t &bb);
 static void Visit(const koopa_raw_value_t &value);
 static void LoadValueToRegister(const koopa_raw_value_t &val, const string &reg);
+static void SaveValueFromRegister(const koopa_raw_value_t &val, const string &reg, const string &tmp);
 
 void CalculateStackSize(const koopa_raw_function_t &func) {
   stack_size = 0;
@@ -175,13 +176,13 @@ static void Visit(const koopa_raw_value_t &value) {
         case KOOPA_RBO_OR: ofs << "  or t0, t0, t1" << endl; ofs << "  snez t0, t0" << endl; break;
         default: assert(false);
       }
-      ofs << "  sw t0, " << value_info_map.at(value) << endl;
+      SaveValueFromRegister(value, "t0", "t1");
       break;
     }
     case KOOPA_RVT_LOAD: {
       const auto &load = kind.data.load;
-      ofs << "  lw t0, " << value_info_map.at(load.src) << endl;
-      ofs << "  sw t0, " << value_info_map.at(value) << endl;
+      LoadValueToRegister(load.src, "t0");
+      SaveValueFromRegister(value, "t0", "t1");
       break;
     }
     case KOOPA_RVT_STORE: {
@@ -190,7 +191,7 @@ static void Visit(const koopa_raw_value_t &value) {
         Visit(store.value);
       }
       LoadValueToRegister(store.value, "t0");
-      ofs << "  sw t0, " << value_info_map.at(store.dest) << endl;
+      SaveValueFromRegister(store.dest, "t0", "t1");
       break;
     }
     case KOOPA_RVT_INTEGER:
@@ -221,7 +222,7 @@ static void Visit(const koopa_raw_value_t &value) {
       }
       ofs << "  call " << call.callee->name + 1 << endl;
       if (value->ty->tag != KOOPA_RTT_UNIT) {
-        ofs << "  sw a0, " << value_info_map.at(value) << endl;
+        SaveValueFromRegister(value, "a0", "t0");
       }
       break;
     }
@@ -238,6 +239,22 @@ static void Visit(const koopa_raw_value_t &value) {
       value_info_map[value] = info;
       break;
     }
+    case KOOPA_RVT_GLOBAL_ALLOC: {
+      ofs << "  .data" << endl;
+      ofs << "  .globl " << value->name + 1 << endl;
+      ofs << value->name + 1 << ":" << endl;
+      const auto &global_alloc = value->kind.data.global_alloc;
+      const auto &init = global_alloc.init;
+      if (init->kind.tag == KOOPA_RVT_ZERO_INIT) {
+        ofs << "  .zero 4" << endl;
+      } else {
+        ofs << "  .word " << init->kind.data.integer.value << endl;
+      }
+      ofs << endl;
+      break;
+    }
+    case KOOPA_RVT_ZERO_INIT:
+      break;
     default:
       assert(false);
   }
@@ -253,8 +270,20 @@ static void LoadValueToRegister(const koopa_raw_value_t &val, const string &reg)
     } else {
       ofs << "  lw " << reg << ", " << info << endl;
     }
+  } else if (val->kind.tag == KOOPA_RVT_GLOBAL_ALLOC){
+    ofs << "  la " << reg << ", " << val->name + 1 << endl;
+    ofs << "  lw " << reg << ", 0(" << reg << ")" << endl;
   } else {
     ofs << "  lw " << reg << ", " << value_info_map.at(val) << endl;
+  }
+}
+
+static void SaveValueFromRegister(const koopa_raw_value_t &val, const string &reg, const string &tmp) {
+  if (val->kind.tag == KOOPA_RVT_GLOBAL_ALLOC){
+    ofs << "  la " << tmp << ", " << val->name + 1 << endl;
+    ofs << "  sw " << reg << ", 0(" << tmp << ")" << endl;
+  } else {
+    ofs << "  sw " << reg << ", " << value_info_map.at(val) << endl;
   }
 }
 
