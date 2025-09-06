@@ -113,6 +113,10 @@ public:
         return loop_stack.back().continue_label;
     }
 
+    bool is_global_scope() const {
+        return table_stack.size() == 1;
+    }
+
 private:
     std::vector<std::unique_ptr<SymbolTable>> table_stack;
     std::unordered_map<std::string, int> symbol_counter;
@@ -150,9 +154,8 @@ decl @stoptime()
         symbols.add_symbol(symbol);
     }
 
-    for (const auto& func_def : func_defs) {
-        func_def->generate_ir(os, symbols);
-        os << std::endl;
+    for (const auto& item : items) {
+        item->generate_ir(os, symbols);
     }
     return {"", true};
 }
@@ -164,7 +167,7 @@ IRResult FuncDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) 
     land_stmt_count = 0;
     while_stmt_count = 0;
 
-    auto func_type_str = dynamic_cast<FuncTypeAST*>(func_type.get())->type;
+    auto func_type_str = dynamic_cast<BTypeAST*>(func_type.get())->type;
     SymbolInfo symbol = {ident, "", 0, false, FUNC_SYMBOL, func_type_str};
     symbols.add_symbol(symbol);
     os << "fun @" << symbol.unique_name << "(";
@@ -182,7 +185,10 @@ IRResult FuncDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) 
         }
     }
     os << ")";
-    func_type->generate_ir(os, symbols);
+    if (func_type_str != "void") {
+        os << ": ";
+        func_type->generate_ir(os, symbols);
+    }
     os << " {" << std::endl;
     os << "%entry:" << std::endl;
 
@@ -193,25 +199,15 @@ IRResult FuncDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) 
 
     auto block_res = block->generate_ir(os, symbols);
     if (!block_res.is_terminated) {
-        if (dynamic_cast<FuncTypeAST*>(func_type.get())->type == "int") {
+        if (dynamic_cast<BTypeAST*>(func_type.get())->type == "int") {
             os << "  ret 0" << std::endl;
         } else {
             os << "  ret" << std::endl;
         }
     }
-    os << "}" << std::endl;
+    os << "}" << std::endl << std::endl;
     symbols.exit_scope();
     return {"", true};
-}
-
-IRResult FuncTypeAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
-    if (type == "int") {
-        os << ": i32";
-    } else if (type == "void") {
-    } else {
-        os << ": unknown";
-    }
-    return {};
 }
 
 IRResult FuncFParamAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
@@ -563,10 +559,23 @@ IRResult VarDeclAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) 
 IRResult VarDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     SymbolInfo symbol = {ident, "", 0, false, VAR_SYMBOL, "int"};
     symbols.add_symbol(symbol);
-    os << "  @" << symbol.unique_name << " = alloc i32" << std::endl;
-    if (init_val) {
-        auto store_val = init_val->generate_ir(os, symbols);
-        os << "  store " << store_val.value << ", @" << symbol.unique_name << std::endl;
+
+    if (symbols.is_global_scope()) {
+        os << "global @" << symbol.unique_name << " = alloc i32, ";
+        if (init_val) {
+            int val = init_val->evaluate_const(symbols);
+            symbol.value = val;
+            os << val;
+        } else {
+            os << "zeroinit";
+        }
+        os << std::endl << std::endl;
+    } else {
+        os << "  @" << symbol.unique_name << " = alloc i32" << std::endl;
+        if (init_val) {
+            auto store_val = init_val->generate_ir(os, symbols);
+            os << "  store " << store_val.value << ", @" << symbol.unique_name << std::endl;
+        }
     }
     return {};
 }
@@ -671,26 +680,26 @@ int LOrExpAST::evaluate_const(SymbolTableManager& symbols) const {
 }
 
 int ExpAST::evaluate_const(SymbolTableManager& symbols) const {
-    if (lor_exp) {
-        return lor_exp->evaluate_const(symbols);
-    }
-    return 0;
+    return lor_exp->evaluate_const(symbols);
 }
 
 int ConstInitValAST::evaluate_const(SymbolTableManager& symbols) const {
-    if (const_exp) {
-        return const_exp->evaluate_const(symbols);
-    }
-    return 0;
+    return const_exp->evaluate_const(symbols);
 }
 
 int ConstExpAST::evaluate_const(SymbolTableManager& symbols) const {
     return exp->evaluate_const(symbols);
 }
 
+int InitValAST::evaluate_const(SymbolTableManager& symbols) const {
+    return exp->evaluate_const(symbols);
+}
+
 IRResult BTypeAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     if (type == "int") {
         os << "i32";
+    } else if (type == "void") {
+        os << "void";
     } else {
         os << "unknown";
     }

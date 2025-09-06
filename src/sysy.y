@@ -34,47 +34,48 @@ using namespace std;
 %token <int_val> INT_CONST
 %token ADD SUB NOT MUL DIV MOD EQ NE GT LT GE LE LAND LOR
 
-%type <ast_val> FuncDef FuncType Block Stmt Exp UnaryExp PrimaryExp AddExp MulExp RelExp EqExp LAndExp LOrExp
+%type <ast_val> FuncDef Block Stmt Exp UnaryExp PrimaryExp AddExp MulExp RelExp EqExp LAndExp LOrExp
 %type <ast_val> Decl ConstDecl BType ConstDef ConstInitVal ConstExp LVal BlockItem VarDecl VarDef InitVal
-%type <ast_val> MatchedStmt UnmatchedStmt FuncFParam
-%type <ast_list_val> BlockItemList ConstDefList VarDefList FuncDefList FuncFParams FuncRParams
+%type <ast_val> MatchedStmt UnmatchedStmt FuncFParam CompUnitItem
+%type <ast_list_val> BlockItemList ConstDefList VarDefList FuncFParams FuncRParams CompUnitItemList
 %type <int_val> Number
 %type <str_val> UnaryOp AddOp MulOp RelOp EqOp
 
 %%
 
 CompUnit
-  : FuncDefList {
+  : CompUnitItemList {
     auto comp_unit = make_unique<CompUnitAST>();
-    auto func_defs = unique_ptr<vector<BaseAST *>>($1);
-    for (auto &def : *func_defs) {
-      comp_unit->func_defs.emplace_back(def);
+    auto items = unique_ptr<vector<BaseAST *>>($1);
+    for (auto &item : *items) {
+      comp_unit->items.emplace_back(item);
     }
     ast = move(comp_unit);
   }
   ;
 
-FuncDefList
-  : FuncDef {
-    auto list = new vector<BaseAST *>();
-    list->push_back($1);
-    $$ = list;
-  }
-  | FuncDefList FuncDef {
+CompUnitItemList
+  : /* empty */ { $$ = new vector<BaseAST *>(); }
+  | CompUnitItemList CompUnitItem {
     $1->push_back($2);
     $$ = $1;
   }
   ;
 
+CompUnitItem
+  : Decl { $$ = $1; }
+  | FuncDef { $$ = $1; }
+  ;
+
 FuncDef
-  : FuncType IDENT '(' ')' Block {
+  : BType IDENT '(' ')' Block {
     auto ast = new FuncDefAST();
     ast->func_type = unique_ptr<BaseAST>($1);
     ast->ident = *unique_ptr<string>($2);
     ast->block = unique_ptr<BaseAST>($5);
     $$ = ast;
   }
-  | FuncType IDENT '(' FuncFParams ')' Block {
+  | BType IDENT '(' FuncFParams ')' Block {
     auto ast = new FuncDefAST();
     ast->func_type = unique_ptr<BaseAST>($1);
     ast->ident = *unique_ptr<string>($2);
@@ -104,19 +105,6 @@ FuncFParam
     auto ast = new FuncFParamAST();
     ast->b_type = unique_ptr<BaseAST>($1);
     ast->ident = *unique_ptr<string>($2);
-    $$ = ast;
-  }
-  ;
-
-FuncType
-  : INT {
-    auto ast = new FuncTypeAST();
-    ast->type = "int";
-    $$ = ast;
-  }
-  | VOID {
-    auto ast = new FuncTypeAST();
-    ast->type = "void";
     $$ = ast;
   }
   ;
@@ -186,6 +174,11 @@ BType
   : INT {
     auto ast = new BTypeAST();
     ast->type = "int";
+    $$ = ast;
+  }
+  | VOID {
+    auto ast = new BTypeAST();
+    ast->type = "void";
     $$ = ast;
   }
   ;

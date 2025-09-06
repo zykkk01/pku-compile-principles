@@ -35,7 +35,7 @@ public:
 
 class CompUnitAST : public BaseAST {
 public:
-    std::vector<std::unique_ptr<BaseAST>> func_defs;
+    std::vector<std::unique_ptr<BaseAST>> items;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
 };
 
@@ -45,12 +45,6 @@ public:
     std::string ident;
     std::vector<std::unique_ptr<BaseAST>> func_f_params;
     std::unique_ptr<BaseAST> block;
-    IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
-};
-
-class FuncTypeAST : public BaseAST {
-public:
-    std::string type;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
 };
 
@@ -113,6 +107,7 @@ class InitValAST : public BaseAST {
 public:
     std::unique_ptr<BaseAST> exp;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
+    int evaluate_const(SymbolTableManager& symbols) const override;
 };
 
 class BlockAST : public BaseAST {
