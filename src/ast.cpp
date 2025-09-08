@@ -246,7 +246,14 @@ IRResult StmtAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) con
             if (auto lval_ast = dynamic_cast<LValAST*>(lval.get())) {
                 auto symbol = symbols.lookup_symbol(lval_ast->ident);
                 if (symbol) {
-                     os << "  store " << store_val.value << ", @" << symbol->unique_name << std::endl;
+                    if (lval_ast->array_index_exp) {
+                        auto array_index = lval_ast->array_index_exp->generate_ir(os, symbols);
+                        std::string ptr_reg = "%" + std::to_string(next_reg++);
+                        os << "  " << ptr_reg << " = getelemptr @" << symbol->unique_name << ", " << array_index.value << std::endl;
+                        os << "  store " << store_val.value << ", " << ptr_reg << std::endl;
+                    } else {
+                        os << "  store " << store_val.value << ", @" << symbol->unique_name << std::endl;
+                    }
                 }
             }
             break;
@@ -527,6 +534,44 @@ IRResult ConstDeclAST::generate_ir(std::ostream& os, SymbolTableManager& symbols
 }
 
 IRResult ConstDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
+    if (array_size_exp) {
+        SymbolInfo symbol = {ident, "", 0, true, VAR_SYMBOL, "int"};
+        symbols.add_symbol(symbol);
+        auto array_size = array_size_exp->evaluate_const(symbols);
+        if (symbols.is_global_scope()) {
+            os << "global @" << symbol.unique_name << " = alloc [i32, " << array_size << "]" << ", ";
+            auto constinit_val_ast = dynamic_cast<ConstInitValAST*>(const_init_val.get());
+            if (constinit_val_ast) {
+                os << "{";
+                for (int i = 0; i < array_size; i++) {
+                    os << constinit_val_ast->const_exps[i]->evaluate_const(symbols);
+                    if (i < array_size - 1) {
+                        os << ", ";
+                    }
+                }
+                os << "}";
+            } else {
+                os << "zeroinit";
+            }
+            os << std::endl << std::endl;
+        } else {
+            os << "  @" << symbol.unique_name << " = alloc [i32, " << array_size << "]" << std::endl;
+            auto const_init_val_ast = dynamic_cast<ConstInitValAST*>(const_init_val.get());
+            if (const_init_val_ast) {
+                for (int i = 0; i < array_size; ++i) {
+                    std::string result_reg = "%" + std::to_string(next_reg++);
+                    os << "  " << result_reg << " = getelemptr @" << symbol.unique_name << ", " << i << std::endl;
+                    if (i < const_init_val_ast->const_exps.size()) {
+                        auto init_val_exp = const_init_val_ast->const_exps[i]->generate_ir(os, symbols);
+                        os << "  store " << init_val_exp.value << ", " << result_reg << std::endl;
+                    } else {
+                        os << "  store 0, " << result_reg << std::endl;
+                    }
+                }
+            }
+        }
+        return {};
+    }
     int val = const_init_val->evaluate_const(symbols);
     SymbolInfo symbol = {ident, "", val, true, VAR_SYMBOL, "int"};
     symbols.add_symbol(symbol);
@@ -561,20 +606,56 @@ IRResult VarDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) c
     symbols.add_symbol(symbol);
 
     if (symbols.is_global_scope()) {
-        os << "global @" << symbol.unique_name << " = alloc i32, ";
-        if (init_val) {
-            int val = init_val->evaluate_const(symbols);
-            symbol.value = val;
-            os << val;
+        if (array_size_exp) {
+            auto array_size = array_size_exp->evaluate_const(symbols);
+            os << "global @" << symbol.unique_name << " = alloc [i32, " << array_size << "]" << ", ";
+            auto init_val_ast = dynamic_cast<InitValAST*>(init_val.get());
+            if (init_val_ast) {
+                os << "{";
+                for (int i = 0; i < array_size; i++) {
+                    os << init_val_ast->exps[i]->evaluate_const(symbols);
+                    if (i < array_size - 1) {
+                        os << ", ";
+                    }
+                }
+                os << "}";
+            } else {
+                os << "zeroinit";
+            }
         } else {
-            os << "zeroinit";
+            os << "global @" << symbol.unique_name << " = alloc i32, ";
+            if (init_val) {
+                int val = init_val->evaluate_const(symbols);
+                symbol.value = val;
+                os << val;
+            } else {
+                os << "zeroinit";
+            }
         }
         os << std::endl << std::endl;
     } else {
-        os << "  @" << symbol.unique_name << " = alloc i32" << std::endl;
-        if (init_val) {
-            auto store_val = init_val->generate_ir(os, symbols);
-            os << "  store " << store_val.value << ", @" << symbol.unique_name << std::endl;
+        if (array_size_exp) {
+            auto array_size = array_size_exp->evaluate_const(symbols);
+            os << "  @" << symbol.unique_name << " = alloc [i32, " << array_size << "]" << std::endl;
+            auto init_val_ast = dynamic_cast<InitValAST*>(init_val.get());
+            if (init_val_ast) {
+                for (int i = 0; i < array_size; ++i) {
+                    std::string result_reg = "%" + std::to_string(next_reg++);
+                    os << "  " << result_reg << " = getelemptr @" << symbol.unique_name << ", " << i << std::endl;
+                    if (i < init_val_ast->exps.size()) {
+                        auto init_val_exp = init_val_ast->exps[i]->generate_ir(os, symbols);
+                        os << "  store " << init_val_exp.value << ", " << result_reg << std::endl;
+                    } else {
+                        os << "  store 0, " << result_reg << std::endl;
+                    }
+                }
+            }
+        } else {
+            os << "  @" << symbol.unique_name << " = alloc i32" << std::endl;
+            if (init_val) {
+                auto store_val = init_val->generate_ir(os, symbols);
+                os << "  store " << store_val.value << ", @" << symbol.unique_name << std::endl;
+            }
         }
     }
     return {};
@@ -711,10 +792,16 @@ IRResult LValAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) con
     if (!symbol) {
         throw std::runtime_error("Undefined variable: " + ident);
     }
+    if (array_index_exp) {
+        auto array_index = array_index_exp->generate_ir(os, symbols);
+        std::string ptr_reg = "%" + std::to_string(next_reg++), result_reg = "%" + std::to_string(next_reg++);
+        os << "  " << ptr_reg << " = getelemptr @" << symbol->unique_name << ", " << array_index.value << std::endl;
+        os << "  " << result_reg << " = load " << ptr_reg << std::endl;
+        return {result_reg, false};
+    }
     if (symbol->is_const) {
         return {std::to_string(symbol->value), false};
     }
-
     std::string result_reg = "%" + std::to_string(next_reg++);
     os << "  " << result_reg << " = load @" << symbol->unique_name << std::endl;
     return {result_reg, false};
