@@ -38,7 +38,7 @@ using namespace std;
 %type <ast_val> Decl ConstDecl BType ConstDef ConstInitVal ConstExp LVal BlockItem VarDecl VarDef InitVal
 %type <ast_val> MatchedStmt UnmatchedStmt FuncFParam CompUnitItem
 %type <ast_list_val> BlockItemList ConstDefList VarDefList FuncFParams FuncRParams CompUnitItemList
-%type <ast_list_val> ConstExpList ExpList
+%type <ast_list_val> ConstInitValList InitValList ExpArrayList
 %type <int_val> Number
 %type <str_val> UnaryOp AddOp MulOp RelOp EqOp
 
@@ -185,17 +185,14 @@ BType
   ;
 
 ConstDef
-  : IDENT '=' ConstInitVal {
+  : IDENT ExpArrayList '=' ConstInitVal {
     auto ast = new ConstDefAST();
     ast->ident = *unique_ptr<string>($1);
-    ast->const_init_val = unique_ptr<BaseAST>($3);
-    $$ = ast;
-  }
-  | IDENT '[' ConstExp ']' '=' ConstInitVal {
-    auto ast = new ConstDefAST();
-    ast->ident = *unique_ptr<string>($1);
-    ast->array_size_exp = unique_ptr<BaseAST>($3);
-    ast->const_init_val = unique_ptr<BaseAST>($6);
+    auto array_exps = unique_ptr<vector<BaseAST *>>($2);
+    for (auto &exp : *array_exps) {
+      ast->array_size_exps.emplace_back(exp);
+    }
+    ast->const_init_val = unique_ptr<BaseAST>($4);
     $$ = ast;
   }
   ;
@@ -210,23 +207,23 @@ ConstInitVal
     auto ast = new ConstInitValAST();
     $$ = ast;
   }
-  | '{' ConstExpList '}' {
+  | '{' ConstInitValList '}' {
     auto ast = new ConstInitValAST();
-    auto exps = unique_ptr<vector<BaseAST *>>($2);
-    for (auto &exp : *exps) {
-      ast->const_exps.emplace_back(exp);
+    auto inits = unique_ptr<vector<BaseAST *>>($2);
+    for (auto &init : *inits) {
+      ast->const_inits.emplace_back(init);
     }
     $$ = ast;
   }
   ;
 
-ConstExpList
-  : ConstExp {
+ConstInitValList
+  : ConstInitVal {
     auto list = new vector<BaseAST *>();
     list->push_back($1);
     $$ = list;
   }
-  | ConstExpList ',' ConstExp {
+  | ConstInitValList ',' ConstInitVal {
     $1->push_back($3);
     $$ = $1;
   }
@@ -265,28 +262,23 @@ VarDefList
   ;
 
 VarDef
-  : IDENT {
+  : IDENT ExpArrayList {
     auto ast = new VarDefAST();
     ast->ident = *unique_ptr<string>($1);
+    auto array_exps = unique_ptr<vector<BaseAST *>>($2);
+    for (auto &exp : *array_exps) {
+      ast->array_size_exps.emplace_back(exp);
+    }
     $$ = ast;
   }
-  | IDENT '[' ConstExp ']' {
+  | IDENT ExpArrayList '=' InitVal {
     auto ast = new VarDefAST();
     ast->ident = *unique_ptr<string>($1);
-    ast->array_size_exp = unique_ptr<BaseAST>($3);
-    $$ = ast;
-  }
-  | IDENT '=' InitVal {
-    auto ast = new VarDefAST();
-    ast->ident = *unique_ptr<string>($1);
-    ast->init_val = unique_ptr<BaseAST>($3);
-    $$ = ast;
-  }
-  | IDENT '[' ConstExp ']' '=' InitVal {
-    auto ast = new VarDefAST();
-    ast->ident = *unique_ptr<string>($1);
-    ast->array_size_exp = unique_ptr<BaseAST>($3);
-    ast->init_val = unique_ptr<BaseAST>($6);
+    auto array_exps = unique_ptr<vector<BaseAST *>>($2);
+    for (auto &exp : *array_exps) {
+      ast->array_size_exps.emplace_back(exp);
+    }
+    ast->init_val = unique_ptr<BaseAST>($4);
     $$ = ast;
   }
   ;
@@ -301,23 +293,23 @@ InitVal
     auto ast = new InitValAST();
     $$ = ast;
   }
-  | '{' ExpList '}' {
+  | '{' InitValList '}' {
     auto ast = new InitValAST();
-    auto exps = unique_ptr<vector<BaseAST *>>($2);
-    for (auto &exp : *exps) {
-      ast->exps.emplace_back(exp);
+    auto inits = unique_ptr<vector<BaseAST *>>($2);
+    for (auto &init : *inits) {
+      ast->inits.emplace_back(init);
     }
     $$ = ast;
   }
   ;
 
-ExpList
-  : Exp {
+InitValList
+  : InitVal {
     auto list = new vector<BaseAST *>();
     list->push_back($1);
     $$ = list;
   }
-  | ExpList ',' Exp {
+  | InitValList ',' InitVal {
     $1->push_back($3);
     $$ = $1;
   }
@@ -561,16 +553,22 @@ PrimaryExp
   ;
 
 LVal
-  : IDENT {
+  : IDENT ExpArrayList {
     auto ast = new LValAST();
     ast->ident = *unique_ptr<string>($1);
+    auto array_exps = unique_ptr<vector<BaseAST *>>($2);
+    for (auto &exp : *array_exps) {
+      ast->array_index_exps.emplace_back(exp);
+    }
     $$ = ast;
   }
-  | IDENT '[' Exp ']' {
-    auto ast = new LValAST();
-    ast->ident = *unique_ptr<string>($1);
-    ast->array_index_exp = unique_ptr<BaseAST>($3);
-    $$ = ast;
+  ;
+
+ExpArrayList
+  : /* empty */ { $$ = new vector<BaseAST *>(); }
+  | ExpArrayList '[' Exp ']' {
+    $1->push_back($3);
+    $$ = $1;
   }
   ;
 

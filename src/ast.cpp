@@ -5,6 +5,9 @@
 #include <stdexcept>
 #include <variant>
 #include <cassert>
+#include <vector>
+#include <numeric>
+#include <functional>
 
 int next_reg = 0, if_stmt_count = 0, lor_stmt_count = 0, land_stmt_count = 0, while_stmt_count = 0;
 
@@ -25,6 +28,7 @@ struct SymbolInfo {
     bool is_const;
     SymbolKind kind;
     std::string type;
+    std::vector<int> dimensions;
 };
 
 struct SymbolTable {
@@ -127,6 +131,64 @@ std::ostream& operator<<(std::ostream& os, const BaseAST& ast) {
     SymbolTableManager symbols;
     ast.generate_ir(os, symbols);
     return os;
+}
+
+void flatten_initializer(
+    const BaseAST* init_node,
+    const std::vector<int>& dims,
+    std::vector<const BaseAST*>& flat_exps,
+    int level,
+    int& written_count
+) {
+    const std::vector<std::unique_ptr<BaseAST>>* inits = nullptr;
+    const BaseAST* single_exp_node = nullptr;
+
+    if (auto const_init_node = dynamic_cast<const ConstInitValAST*>(init_node)) {
+        if (const_init_node->const_exp) {
+            single_exp_node = const_init_node->const_exp.get();
+        }
+        inits = &const_init_node->const_inits;
+    } else if (auto init_val_node = dynamic_cast<const InitValAST*>(init_node)) {
+        if (init_val_node->exp) {
+            single_exp_node = init_val_node->exp.get();
+        }
+        inits = &init_val_node->inits;
+    }
+
+    if (single_exp_node) {
+        flat_exps.push_back(single_exp_node);
+        written_count++;
+        return;
+    }
+
+    if (!inits || inits->empty()) return;
+
+    if (level >= dims.size()) {
+        throw std::runtime_error("Excessive nesting in initializer list");
+    }
+
+    long long sub_array_size = 1;
+    for (size_t i = level; i < dims.size(); ++i) {
+        sub_array_size *= dims[i];
+    }
+    long long stride = sub_array_size / dims[level];
+
+    if (written_count % stride != 0) {
+         throw std::runtime_error("Initializer list not aligned with array dimension boundaries.");
+    }
+
+    for (const auto& item : *inits) {
+        flatten_initializer(item.get(), dims, flat_exps, level + 1, written_count);
+    }
+
+    long long remainder = written_count % stride;
+    if (remainder != 0) {
+        int padding = stride - remainder;
+        for (int i = 0; i < padding; ++i) {
+            flat_exps.push_back(nullptr);
+        }
+        written_count += padding;
+    }
 }
 
 IRResult CompUnitAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
@@ -246,10 +308,32 @@ IRResult StmtAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) con
             if (auto lval_ast = dynamic_cast<LValAST*>(lval.get())) {
                 auto symbol = symbols.lookup_symbol(lval_ast->ident);
                 if (symbol) {
-                    if (lval_ast->array_index_exp) {
-                        auto array_index = lval_ast->array_index_exp->generate_ir(os, symbols);
+                     if (!lval_ast->array_index_exps.empty()) {
+                        std::string final_offset_reg = "0";
+                        if (!symbol->dimensions.empty()) {
+                             if (symbol->dimensions.size() != lval_ast->array_index_exps.size()) {
+                                throw std::runtime_error("Incorrect number of dimensions for array " + lval_ast->ident);
+                            }
+                            std::string running_offset_reg = "%" + std::to_string(next_reg++);
+                            os << "  " << running_offset_reg << " = add 0, 0" << std::endl;
+
+                            for (size_t i = 0; i < symbol->dimensions.size(); ++i) {
+                                long long stride = 1;
+                                for (size_t j = i + 1; j < symbol->dimensions.size(); ++j) {
+                                    stride *= symbol->dimensions[j];
+                                }
+                                auto index_val = lval_ast->array_index_exps[i]->generate_ir(os, symbols);
+                                std::string term_reg = "%" + std::to_string(next_reg++);
+                                os << "  " << term_reg << " = mul " << index_val.value << ", " << stride << std::endl;
+                                std::string next_offset_reg = "%" + std::to_string(next_reg++);
+                                os << "  " << next_offset_reg << " = add " << running_offset_reg << ", " << term_reg << std::endl;
+                                running_offset_reg = next_offset_reg;
+                            }
+                            final_offset_reg = running_offset_reg;
+                        }
+
                         std::string ptr_reg = "%" + std::to_string(next_reg++);
-                        os << "  " << ptr_reg << " = getelemptr @" << symbol->unique_name << ", " << array_index.value << std::endl;
+                        os << "  " << ptr_reg << " = getelemptr @" << symbol->unique_name << ", " << final_offset_reg << std::endl;
                         os << "  store " << store_val.value << ", " << ptr_reg << std::endl;
                     } else {
                         os << "  store " << store_val.value << ", @" << symbol->unique_name << std::endl;
@@ -422,13 +506,13 @@ IRResult LOrExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) c
         std::string eval_rhs_label = "%lor_eval_rhs_" + std::to_string(current_id);
         std::string end_label = "%lor_end_" + std::to_string(current_id);
         
-        std::string result_ptr = "%lor_res_" + std::to_string(current_id);
+        std::string result_ptr = "@lor_res_" + std::to_string(current_id);
         os << "  " << result_ptr << " = alloc i32" << std::endl;
-        os << "  store 1, " << result_ptr << std::endl;
 
         auto lhs_res = lor_exp->generate_ir(os, symbols);
         std::string lhs_bool = "%" + std::to_string(next_reg++);
         os << "  " << lhs_bool << " = ne 0, " << lhs_res.value << std::endl;
+        os << "  store " << lhs_bool << ", " << result_ptr << std::endl;
         os << "  br " << lhs_bool << ", " << end_label << ", " << eval_rhs_label << std::endl;
 
         os << eval_rhs_label << ":" << std::endl;
@@ -455,13 +539,13 @@ IRResult LAndExpAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) 
         std::string eval_rhs_label = "%land_eval_rhs_" + std::to_string(current_id);
         std::string end_label = "%land_end_" + std::to_string(current_id);
 
-        std::string result_ptr = "%land_res_" + std::to_string(current_id);
+        std::string result_ptr = "@land_res_" + std::to_string(current_id);
         os << "  " << result_ptr << " = alloc i32" << std::endl;
-        os << "  store 0, " << result_ptr << std::endl;
 
         auto lhs_res = land_exp->generate_ir(os, symbols);
         std::string lhs_bool = "%" + std::to_string(next_reg++);
         os << "  " << lhs_bool << " = ne 0, " << lhs_res.value << std::endl;
+        os << "  store " << lhs_bool << ", " << result_ptr << std::endl;
         os << "  br " << lhs_bool << ", " << eval_rhs_label << ", " << end_label << std::endl;
 
         os << eval_rhs_label << ":" << std::endl;
@@ -534,20 +618,34 @@ IRResult ConstDeclAST::generate_ir(std::ostream& os, SymbolTableManager& symbols
 }
 
 IRResult ConstDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
-    if (array_size_exp) {
+    if (!array_size_exps.empty()) {
         SymbolInfo symbol = {ident, "", 0, true, VAR_SYMBOL, "int"};
+        
+        long long total_size = 1;
+        for (const auto& exp : array_size_exps) {
+            int dim_size = exp->evaluate_const(symbols);
+            symbol.dimensions.push_back(dim_size);
+            total_size *= dim_size;
+        }
         symbols.add_symbol(symbol);
-        auto array_size = array_size_exp->evaluate_const(symbols);
+        
+        std::vector<const BaseAST*> flat_inits;
+        if (const_init_val) {
+            int written_count = 0;
+            flatten_initializer(const_init_val.get(), symbol.dimensions, flat_inits, 0, written_count);
+        }
+
         if (symbols.is_global_scope()) {
-            os << "global @" << symbol.unique_name << " = alloc [i32, " << array_size << "]" << ", ";
-            auto constinit_val_ast = dynamic_cast<ConstInitValAST*>(const_init_val.get());
-            if (constinit_val_ast) {
+            os << "global @" << symbol.unique_name << " = alloc [i32, " << total_size << "]" << ", ";
+            if (const_init_val) {
                 os << "{";
-                for (int i = 0; i < array_size; i++) {
-                    os << constinit_val_ast->const_exps[i]->evaluate_const(symbols);
-                    if (i < array_size - 1) {
-                        os << ", ";
+                for (int i = 0; i < total_size; i++) {
+                    if (i < flat_inits.size() && flat_inits[i]) {
+                        os << flat_inits[i]->evaluate_const(symbols);
+                    } else {
+                        os << "0";
                     }
+                    if (i < total_size - 1) os << ", ";
                 }
                 os << "}";
             } else {
@@ -555,14 +653,13 @@ IRResult ConstDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols)
             }
             os << std::endl << std::endl;
         } else {
-            os << "  @" << symbol.unique_name << " = alloc [i32, " << array_size << "]" << std::endl;
-            auto const_init_val_ast = dynamic_cast<ConstInitValAST*>(const_init_val.get());
-            if (const_init_val_ast) {
-                for (int i = 0; i < array_size; ++i) {
+            os << "  @" << symbol.unique_name << " = alloc [i32, " << total_size << "]" << std::endl;
+            if (const_init_val) {
+                for (int i = 0; i < total_size; ++i) {
                     std::string result_reg = "%" + std::to_string(next_reg++);
                     os << "  " << result_reg << " = getelemptr @" << symbol.unique_name << ", " << i << std::endl;
-                    if (i < const_init_val_ast->const_exps.size()) {
-                        auto init_val_exp = const_init_val_ast->const_exps[i]->generate_ir(os, symbols);
+                    if (i < flat_inits.size() && flat_inits[i]) {
+                        auto init_val_exp = flat_inits[i]->generate_ir(os, symbols);
                         os << "  store " << init_val_exp.value << ", " << result_reg << std::endl;
                     } else {
                         os << "  store 0, " << result_reg << std::endl;
@@ -579,6 +676,7 @@ IRResult ConstDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols)
 }
 
 IRResult ConstInitValAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
+    if(const_exp) return const_exp->generate_ir(os, symbols);
     return {};
 }
 
@@ -590,6 +688,9 @@ int LValAST::evaluate_const(SymbolTableManager& symbols) const {
     auto symbol = symbols.lookup_symbol(ident);
     if (!symbol) {
         throw std::runtime_error("Undefined variable: " + ident);
+    }
+    if (!array_index_exps.empty()) {
+        throw std::logic_error("Cannot evaluate array element in constant expression");
     }
     return symbol->value;
 }
@@ -603,53 +704,65 @@ IRResult VarDeclAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) 
 
 IRResult VarDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     SymbolInfo symbol = {ident, "", 0, false, VAR_SYMBOL, "int"};
-    symbols.add_symbol(symbol);
 
-    if (symbols.is_global_scope()) {
-        if (array_size_exp) {
-            auto array_size = array_size_exp->evaluate_const(symbols);
-            os << "global @" << symbol.unique_name << " = alloc [i32, " << array_size << "]" << ", ";
-            auto init_val_ast = dynamic_cast<InitValAST*>(init_val.get());
-            if (init_val_ast) {
+    if (!array_size_exps.empty()) {
+        long long total_size = 1;
+        for (const auto& exp : array_size_exps) {
+            int dim_size = exp->evaluate_const(symbols);
+            symbol.dimensions.push_back(dim_size);
+            total_size *= dim_size;
+        }
+        symbols.add_symbol(symbol);
+
+        std::vector<const BaseAST*> flat_inits;
+        if (init_val) {
+            int written_count = 0;
+            flatten_initializer(init_val.get(), symbol.dimensions, flat_inits, 0, written_count);
+        }
+
+        if (symbols.is_global_scope()) {
+            os << "global @" << symbol.unique_name << " = alloc [i32, " << total_size << "]" << ", ";
+            if (init_val) {
                 os << "{";
-                for (int i = 0; i < array_size; i++) {
-                    os << init_val_ast->exps[i]->evaluate_const(symbols);
-                    if (i < array_size - 1) {
-                        os << ", ";
+                for (int i = 0; i < total_size; i++) {
+                    if (i < flat_inits.size() && flat_inits[i]) {
+                        os << flat_inits[i]->evaluate_const(symbols);
+                    } else {
+                        os << "0";
                     }
+                    if (i < total_size - 1) os << ", ";
                 }
                 os << "}";
             } else {
                 os << "zeroinit";
             }
+             os << std::endl << std::endl;
         } else {
-            os << "global @" << symbol.unique_name << " = alloc i32, ";
+            os << "  @" << symbol.unique_name << " = alloc [i32, " << total_size << "]" << std::endl;
             if (init_val) {
-                int val = init_val->evaluate_const(symbols);
-                symbol.value = val;
-                os << val;
-            } else {
-                os << "zeroinit";
-            }
-        }
-        os << std::endl << std::endl;
-    } else {
-        if (array_size_exp) {
-            auto array_size = array_size_exp->evaluate_const(symbols);
-            os << "  @" << symbol.unique_name << " = alloc [i32, " << array_size << "]" << std::endl;
-            auto init_val_ast = dynamic_cast<InitValAST*>(init_val.get());
-            if (init_val_ast) {
-                for (int i = 0; i < array_size; ++i) {
+                for (int i = 0; i < total_size; ++i) {
                     std::string result_reg = "%" + std::to_string(next_reg++);
                     os << "  " << result_reg << " = getelemptr @" << symbol.unique_name << ", " << i << std::endl;
-                    if (i < init_val_ast->exps.size()) {
-                        auto init_val_exp = init_val_ast->exps[i]->generate_ir(os, symbols);
+                    if (i < flat_inits.size() && flat_inits[i]) {
+                        auto init_val_exp = flat_inits[i]->generate_ir(os, symbols);
                         os << "  store " << init_val_exp.value << ", " << result_reg << std::endl;
                     } else {
                         os << "  store 0, " << result_reg << std::endl;
                     }
                 }
             }
+        }
+    } else {
+        symbols.add_symbol(symbol);
+        if (symbols.is_global_scope()) {
+            os << "global @" << symbol.unique_name << " = alloc i32, ";
+            if (init_val) {
+                int val = init_val->evaluate_const(symbols);
+                os << val;
+            } else {
+                os << "zeroinit";
+            }
+            os << std::endl << std::endl;
         } else {
             os << "  @" << symbol.unique_name << " = alloc i32" << std::endl;
             if (init_val) {
@@ -661,8 +774,10 @@ IRResult VarDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) c
     return {};
 }
 
+
 IRResult InitValAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
-    return exp->generate_ir(os, symbols);
+    if(exp) return exp->generate_ir(os, symbols);
+    return {};
 }
 
 int PrimaryExpAST::evaluate_const(SymbolTableManager& symbols) const {
@@ -765,7 +880,8 @@ int ExpAST::evaluate_const(SymbolTableManager& symbols) const {
 }
 
 int ConstInitValAST::evaluate_const(SymbolTableManager& symbols) const {
-    return const_exp->evaluate_const(symbols);
+    if (const_exp) return const_exp->evaluate_const(symbols);
+    throw std::logic_error("Cannot evaluate initializer list in constant expression");
 }
 
 int ConstExpAST::evaluate_const(SymbolTableManager& symbols) const {
@@ -773,7 +889,8 @@ int ConstExpAST::evaluate_const(SymbolTableManager& symbols) const {
 }
 
 int InitValAST::evaluate_const(SymbolTableManager& symbols) const {
-    return exp->evaluate_const(symbols);
+    if(exp) return exp->evaluate_const(symbols);
+    throw std::logic_error("Cannot evaluate initializer list in constant expression");
 }
 
 IRResult BTypeAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
@@ -792,13 +909,45 @@ IRResult LValAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) con
     if (!symbol) {
         throw std::runtime_error("Undefined variable: " + ident);
     }
-    if (array_index_exp) {
-        auto array_index = array_index_exp->generate_ir(os, symbols);
-        std::string ptr_reg = "%" + std::to_string(next_reg++), result_reg = "%" + std::to_string(next_reg++);
-        os << "  " << ptr_reg << " = getelemptr @" << symbol->unique_name << ", " << array_index.value << std::endl;
+
+    if (!array_index_exps.empty()) {
+        if (symbol->dimensions.empty()) {
+            throw std::runtime_error("Indexing non-array variable " + ident);
+        }
+        if (symbol->dimensions.size() != array_index_exps.size()) {
+            throw std::runtime_error("Incorrect number of dimensions for array " + ident);
+        }
+
+        std::string running_offset_reg = "%" + std::to_string(next_reg++);
+        os << "  " << running_offset_reg << " = add 0, 0" << std::endl;
+
+        for (size_t i = 0; i < symbol->dimensions.size(); ++i) {
+            long long stride = 1;
+            for (size_t j = i + 1; j < symbol->dimensions.size(); ++j) {
+                stride *= symbol->dimensions[j];
+            }
+            auto index_val = array_index_exps[i]->generate_ir(os, symbols);
+            
+            std::string term_reg;
+            if (stride > 1) {
+                term_reg = "%" + std::to_string(next_reg++);
+                os << "  " << term_reg << " = mul " << index_val.value << ", " << stride << std::endl;
+            } else {
+                term_reg = index_val.value;
+            }
+
+            std::string next_offset_reg = "%" + std::to_string(next_reg++);
+            os << "  " << next_offset_reg << " = add " << running_offset_reg << ", " << term_reg << std::endl;
+            running_offset_reg = next_offset_reg;
+        }
+
+        std::string ptr_reg = "%" + std::to_string(next_reg++);
+        std::string result_reg = "%" + std::to_string(next_reg++);
+        os << "  " << ptr_reg << " = getelemptr @" << symbol->unique_name << ", " << running_offset_reg << std::endl;
         os << "  " << result_reg << " = load " << ptr_reg << std::endl;
         return {result_reg, false};
     }
+
     if (symbol->is_const) {
         return {std::to_string(symbol->value), false};
     }

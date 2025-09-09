@@ -78,7 +78,7 @@ public:
 class ConstDefAST : public BaseAST {
 public:
     std::string ident;
-    std::unique_ptr<BaseAST> array_size_exp;
+    std::vector<std::unique_ptr<BaseAST>> array_size_exps;
     std::unique_ptr<BaseAST> const_init_val;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
 };
@@ -86,7 +86,7 @@ public:
 class ConstInitValAST : public BaseAST {
 public:
     std::unique_ptr<BaseAST> const_exp;
-    std::vector<std::unique_ptr<BaseAST>> const_exps;
+    std::vector<std::unique_ptr<BaseAST>> const_inits;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
     int evaluate_const(SymbolTableManager& symbols) const override;
 };
@@ -101,7 +101,7 @@ public:
 class VarDefAST : public BaseAST {
 public:
     std::string ident;
-    std::unique_ptr<BaseAST> array_size_exp;
+    std::vector<std::unique_ptr<BaseAST>> array_size_exps;
     std::unique_ptr<BaseAST> init_val;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
 };
@@ -109,7 +109,7 @@ public:
 class InitValAST : public BaseAST {
 public:
     std::unique_ptr<BaseAST> exp;
-    std::vector<std::unique_ptr<BaseAST>> exps;
+    std::vector<std::unique_ptr<BaseAST>> inits;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
     int evaluate_const(SymbolTableManager& symbols) const override;
 };
@@ -150,7 +150,7 @@ public:
 class LValAST : public BaseAST {
 public:
     std::string ident;
-    std::unique_ptr<BaseAST> array_index_exp;
+    std::vector<std::unique_ptr<BaseAST>> array_index_exps;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
     int evaluate_const(SymbolTableManager& symbols) const override;
 };
