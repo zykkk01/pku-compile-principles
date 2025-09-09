@@ -20,7 +20,8 @@ static bool is_ra_saved;
 static string current_func_name;
 enum class ValueType {
   STACK,
-  REGISTER
+  REGISTER,
+  GLOBAL
 };
 struct ValueInfo {
   int offset;
@@ -45,6 +46,17 @@ static void Visit(const koopa_raw_basic_block_t &bb);
 static void Visit(const koopa_raw_value_t &value);
 static void LoadValueToRegister(const koopa_raw_value_t &val, const string &reg);
 static void SaveValueFromRegister(const koopa_raw_value_t &val, const string &reg, const string &tmp);
+static void EmitSPRelativeAccess(const string &inst, const string &data_reg, int offset, const string &temp_reg);
+
+int get_array_size(const koopa_raw_type_t arr) {
+  if(arr->tag == KOOPA_RTT_ARRAY) {
+    return arr->data.array.len * get_array_size(arr->data.array.base);
+  } else if(arr->tag == KOOPA_RTT_POINTER) {
+    return get_array_size(arr->data.pointer.base);
+  } else {
+    return 4;
+  }
+}
 
 void CalculateStackSize(const koopa_raw_function_t &func) {
   stack_size = 0;
@@ -66,7 +78,13 @@ void CalculateStackSize(const koopa_raw_function_t &func) {
     auto bb = reinterpret_cast<koopa_raw_basic_block_t>(func->bbs.buffer[i]);
     for (size_t j = 0; j < bb->insts.len; ++j) {
       auto inst = reinterpret_cast<koopa_raw_value_t>(bb->insts.buffer[j]);
-      if (inst->ty->tag != KOOPA_RTT_UNIT) {
+      if (inst->kind.tag == KOOPA_RVT_ALLOC) {
+        ValueInfo info;
+        info.offset = stack_size + stack_param_num * 4;
+        info.type = ValueType::STACK;
+        value_info_map[inst] = info;
+        stack_size += get_array_size(inst->ty);
+      } else if (inst->ty->tag != KOOPA_RTT_UNIT) {
         ValueInfo info;
         info.offset = stack_size + stack_param_num * 4;
         info.type = ValueType::STACK;
@@ -76,6 +94,16 @@ void CalculateStackSize(const koopa_raw_function_t &func) {
     }
   }
   stack_size = (stack_size + (int)is_ra_saved * 4 + stack_param_num * 4 + 15) / 16 * 16;
+}
+
+static void EmitSPRelativeAccess(const string &inst, const string &data_reg, int offset, const string &temp_reg) {
+  if (offset >= -2048 && offset <= 2047) {
+    ofs << "  " << inst << " " << data_reg << ", " << offset << "(sp)" << endl;
+  } else {
+    ofs << "  li " << temp_reg << ", " << offset << endl;
+    ofs << "  add " << temp_reg << ", sp, " << temp_reg << endl;
+    ofs << "  " << inst << " " << data_reg << ", 0(" << temp_reg << ")" << endl;
+  }
 }
 
 static void Visit(const koopa_raw_program_t &program) {
@@ -120,12 +148,12 @@ static void Visit(const koopa_raw_function_t &func) {
     }
   }
   if (is_ra_saved) {
-    ofs << "  sw ra, " << stack_size - 4 << "(sp)" << endl;
+    EmitSPRelativeAccess("sw", "ra", stack_size - 4, "t0");
   }
   Visit(func->bbs);
   ofs << current_func_name << "_end:" << endl;
   if (is_ra_saved) {
-    ofs << "  lw ra, " << stack_size - 4 << "(sp)" << endl;
+    EmitSPRelativeAccess("lw", "ra", stack_size - 4, "t0");
   }
   if (stack_size > 0) {
     if (stack_size <= 2047) {
@@ -187,9 +215,6 @@ static void Visit(const koopa_raw_value_t &value) {
     }
     case KOOPA_RVT_STORE: {
       const auto &store = kind.data.store;
-      if (store.value->kind.tag == KOOPA_RVT_FUNC_ARG_REF) {
-        Visit(store.value);
-      }
       LoadValueToRegister(store.value, "t0");
       SaveValueFromRegister(store.dest, "t0", "t1");
       break;
@@ -217,7 +242,7 @@ static void Visit(const koopa_raw_value_t &value) {
           LoadValueToRegister(arg_val, "a" + to_string(i));
         } else {
           LoadValueToRegister(arg_val, "t0");
-          ofs << "  sw t0, " << (i - 8) * 4 << "(sp)" << endl;
+          EmitSPRelativeAccess("sw", "t0", (int)(i - 8) * 4, "t1");
         }
       }
       ofs << "  call " << call.callee->name + 1 << endl;
@@ -243,10 +268,19 @@ static void Visit(const koopa_raw_value_t &value) {
       ofs << "  .data" << endl;
       ofs << "  .globl " << value->name + 1 << endl;
       ofs << value->name + 1 << ":" << endl;
+      ValueInfo info;
+      info.type = ValueType::GLOBAL;
+      value_info_map[value] = info;
       const auto &global_alloc = value->kind.data.global_alloc;
       const auto &init = global_alloc.init;
       if (init->kind.tag == KOOPA_RVT_ZERO_INIT) {
-        ofs << "  .zero 4" << endl;
+        ofs << "  .zero " << get_array_size(value->ty) << endl;
+      } else if (init->kind.tag == KOOPA_RVT_AGGREGATE) {
+        const auto &aggregate = init->kind.data.aggregate;
+        for (size_t i = 0; i < aggregate.elems.len; ++i) {
+          const auto &elem = reinterpret_cast<koopa_raw_value_t>(aggregate.elems.buffer[i]);
+          ofs << "  .word " << elem->kind.data.integer.value << endl;
+        }
       } else {
         ofs << "  .word " << init->kind.data.integer.value << endl;
       }
@@ -255,6 +289,27 @@ static void Visit(const koopa_raw_value_t &value) {
     }
     case KOOPA_RVT_ZERO_INIT:
       break;
+    case KOOPA_RVT_GET_ELEM_PTR: {
+      const auto &get_elem_ptr = kind.data.get_elem_ptr;
+      const auto &src = get_elem_ptr.src;
+      if (value_info_map.at(src).type == ValueType::GLOBAL) {
+        ofs << "  la t0, " << src->name + 1 << endl;
+      } else {
+        int offset = value_info_map.at(src).offset;
+        if (offset >= -2048 && offset <= 2047) {
+            ofs << "  addi t0, sp, " << offset << endl;
+        } else {
+            ofs << "  li t1, " << offset << endl;
+            ofs << "  add t0, sp, t1" << endl;
+        }
+      }
+      LoadValueToRegister(get_elem_ptr.index, "t1");
+      ofs << "  li t2, 4" << endl;
+      ofs << "  mul t1, t1, t2" << endl;
+      ofs << "  add t0, t0, t1" << endl;
+      EmitSPRelativeAccess("sw", "t0", value_info_map.at(value).offset, "t1");
+      break;
+    }
     default:
       assert(false);
   }
@@ -264,17 +319,23 @@ static void LoadValueToRegister(const koopa_raw_value_t &val, const string &reg)
   if (val->kind.tag == KOOPA_RVT_INTEGER) {
     ofs << "  li " << reg << ", " << val->kind.data.integer.value << endl;
   } else if (val->kind.tag == KOOPA_RVT_FUNC_ARG_REF) {
+    if (value_info_map.find(val) == value_info_map.end()) {
+        Visit(val);
+    }
     auto info = value_info_map.at(val);
     if (info.type == ValueType::REGISTER) {
-      ofs << "  mv " << reg << ", " << info << endl;
+      ofs << "  mv " << reg << ", " << info.reg << endl;
     } else {
-      ofs << "  lw " << reg << ", " << info << endl;
+      EmitSPRelativeAccess("lw", reg, info.offset, "t2");
     }
   } else if (val->kind.tag == KOOPA_RVT_GLOBAL_ALLOC){
     ofs << "  la " << reg << ", " << val->name + 1 << endl;
     ofs << "  lw " << reg << ", 0(" << reg << ")" << endl;
+  } else if (val->kind.tag == KOOPA_RVT_GET_ELEM_PTR) {
+    EmitSPRelativeAccess("lw", reg, value_info_map.at(val).offset, "t2");
+    ofs << "  lw " << reg << ", 0(" << reg << ")" << endl;
   } else {
-    ofs << "  lw " << reg << ", " << value_info_map.at(val) << endl;
+    EmitSPRelativeAccess("lw", reg, value_info_map.at(val).offset, "t2");
   }
 }
 
@@ -282,8 +343,11 @@ static void SaveValueFromRegister(const koopa_raw_value_t &val, const string &re
   if (val->kind.tag == KOOPA_RVT_GLOBAL_ALLOC){
     ofs << "  la " << tmp << ", " << val->name + 1 << endl;
     ofs << "  sw " << reg << ", 0(" << tmp << ")" << endl;
+  } else if (val->kind.tag == KOOPA_RVT_GET_ELEM_PTR) {
+    EmitSPRelativeAccess("lw", tmp, value_info_map.at(val).offset, "t2");
+    ofs << "  sw " << reg << ", 0(" << tmp << ")" << endl;
   } else {
-    ofs << "  sw " << reg << ", " << value_info_map.at(val) << endl;
+    EmitSPRelativeAccess("sw", reg, value_info_map.at(val).offset, tmp);
   }
 }
 
