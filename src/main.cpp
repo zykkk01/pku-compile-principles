@@ -27,15 +27,6 @@ struct ValueInfo {
   int offset;
   std::string reg;
   ValueType type;
-
-  friend std::ostream &operator<<(std::ostream &os, const ValueInfo &info) {
-    if (info.type == ValueType::STACK) {
-      os << info.offset << "(sp)";
-    } else {
-      os << info.reg;
-    }
-    return os;
-  }
 };
 static unordered_map<const void*, ValueInfo> value_info_map;
 
@@ -47,6 +38,8 @@ static void Visit(const koopa_raw_value_t &value);
 static void LoadValueToRegister(const koopa_raw_value_t &val, const string &reg);
 static void SaveValueFromRegister(const koopa_raw_value_t &val, const string &reg, const string &tmp);
 static void EmitSPRelativeAccess(const string &inst, const string &data_reg, int offset, const string &temp_reg);
+static void MoveValueToRegister(const koopa_raw_value_t &val, const string &reg);
+static void MoveValueFromRegister(const koopa_raw_value_t &val, const string &reg);
 
 int get_array_size(const koopa_raw_type_t arr) {
   if(arr->tag == KOOPA_RTT_ARRAY) {
@@ -179,15 +172,15 @@ static void Visit(const koopa_raw_value_t &value) {
     case KOOPA_RVT_RETURN: {
       const auto &ret = kind.data.ret;
       if (ret.value) {
-        LoadValueToRegister(ret.value, "a0");
+        MoveValueToRegister(ret.value, "a0");
       }
       ofs << "  j " << current_func_name << "_end" << endl;
       break;
     }
     case KOOPA_RVT_BINARY: {
       const auto &binary = kind.data.binary;
-      LoadValueToRegister(binary.lhs, "t0");
-      LoadValueToRegister(binary.rhs, "t1");
+      MoveValueToRegister(binary.lhs, "t0");
+      MoveValueToRegister(binary.rhs, "t1");
       switch (binary.op) {
         case KOOPA_RBO_ADD: ofs << "  add t0, t0, t1" << endl; break;
         case KOOPA_RBO_SUB: ofs << "  sub t0, t0, t1" << endl; break;
@@ -204,18 +197,18 @@ static void Visit(const koopa_raw_value_t &value) {
         case KOOPA_RBO_OR: ofs << "  or t0, t0, t1" << endl; ofs << "  snez t0, t0" << endl; break;
         default: assert(false);
       }
-      SaveValueFromRegister(value, "t0", "t1");
+      MoveValueFromRegister(value, "t0");
       break;
     }
     case KOOPA_RVT_LOAD: {
       const auto &load = kind.data.load;
       LoadValueToRegister(load.src, "t0");
-      SaveValueFromRegister(value, "t0", "t1");
+      MoveValueFromRegister(value, "t0");
       break;
     }
     case KOOPA_RVT_STORE: {
       const auto &store = kind.data.store;
-      LoadValueToRegister(store.value, "t0");
+      MoveValueToRegister(store.value, "t0");
       SaveValueFromRegister(store.dest, "t0", "t1");
       break;
     }
@@ -224,7 +217,7 @@ static void Visit(const koopa_raw_value_t &value) {
       break;
     case KOOPA_RVT_BRANCH: {
       const auto &branch = kind.data.branch;
-      LoadValueToRegister(branch.cond, "t0");
+      MoveValueToRegister(branch.cond, "t0");
       ofs << "  bnez t0, " << current_func_name << "_" << branch.true_bb->name + 1 << endl;
       ofs << "  j " << current_func_name << "_" << branch.false_bb->name + 1 << endl;
       break;
@@ -239,15 +232,15 @@ static void Visit(const koopa_raw_value_t &value) {
       for (size_t i = 0; i < call.args.len; ++i) {
         auto arg_val = reinterpret_cast<koopa_raw_value_t>(call.args.buffer[i]);
         if (i < 8) {
-          LoadValueToRegister(arg_val, "a" + to_string(i));
+          MoveValueToRegister(arg_val, "a" + to_string(i));
         } else {
-          LoadValueToRegister(arg_val, "t0");
+          MoveValueToRegister(arg_val, "t0");
           EmitSPRelativeAccess("sw", "t0", (int)(i - 8) * 4, "t1");
         }
       }
       ofs << "  call " << call.callee->name + 1 << endl;
       if (value->ty->tag != KOOPA_RTT_UNIT) {
-        SaveValueFromRegister(value, "a0", "t0");
+        MoveValueFromRegister(value, "a0");
       }
       break;
     }
@@ -303,7 +296,22 @@ static void Visit(const koopa_raw_value_t &value) {
             ofs << "  add t0, sp, t1" << endl;
         }
       }
-      LoadValueToRegister(get_elem_ptr.index, "t1");
+      MoveValueToRegister(get_elem_ptr.index, "t1");
+      ofs << "  li t2, 4" << endl;
+      ofs << "  mul t1, t1, t2" << endl;
+      ofs << "  add t0, t0, t1" << endl;
+      EmitSPRelativeAccess("sw", "t0", value_info_map.at(value).offset, "t1");
+      break;
+    }
+    case KOOPA_RVT_GET_PTR: {
+      const auto &get_ptr = kind.data.get_ptr;
+      const auto &src = get_ptr.src;
+      if (value_info_map.at(src).type == ValueType::GLOBAL) {
+        ofs << "  la t0, " << src->name + 1 << endl;
+      } else {
+        MoveValueToRegister(src, "t0");
+      }
+      MoveValueToRegister(get_ptr.index, "t1");
       ofs << "  li t2, 4" << endl;
       ofs << "  mul t1, t1, t2" << endl;
       ofs << "  add t0, t0, t1" << endl;
@@ -334,6 +342,9 @@ static void LoadValueToRegister(const koopa_raw_value_t &val, const string &reg)
   } else if (val->kind.tag == KOOPA_RVT_GET_ELEM_PTR) {
     EmitSPRelativeAccess("lw", reg, value_info_map.at(val).offset, "t2");
     ofs << "  lw " << reg << ", 0(" << reg << ")" << endl;
+  } else if (val->kind.tag == KOOPA_RVT_GET_PTR){
+    EmitSPRelativeAccess("lw", reg, value_info_map.at(val).offset, "t2");
+    ofs << "  lw " << reg << ", 0(" << reg << ")" << endl;
   } else {
     EmitSPRelativeAccess("lw", reg, value_info_map.at(val).offset, "t2");
   }
@@ -346,8 +357,37 @@ static void SaveValueFromRegister(const koopa_raw_value_t &val, const string &re
   } else if (val->kind.tag == KOOPA_RVT_GET_ELEM_PTR) {
     EmitSPRelativeAccess("lw", tmp, value_info_map.at(val).offset, "t2");
     ofs << "  sw " << reg << ", 0(" << tmp << ")" << endl;
+  } else if (val->kind.tag == KOOPA_RVT_GET_PTR) {
+    EmitSPRelativeAccess("lw", tmp, value_info_map.at(val).offset, "t2");
+    ofs << "  sw " << reg << ", 0(" << tmp << ")" << endl;
   } else {
     EmitSPRelativeAccess("sw", reg, value_info_map.at(val).offset, tmp);
+  }
+}
+
+static void MoveValueToRegister(const koopa_raw_value_t &val, const string &reg) {
+  if (val->kind.tag == KOOPA_RVT_INTEGER) {
+    ofs << "  li " << reg << ", " << val->kind.data.integer.value << endl;
+  } else if (val->kind.tag == KOOPA_RVT_FUNC_ARG_REF) {
+    if (value_info_map.find(val) == value_info_map.end()) {
+        Visit(val);
+    }
+    auto info = value_info_map.at(val);
+    if (info.type == ValueType::REGISTER) {
+      ofs << "  mv " << reg << ", " << info.reg << endl;
+    } else {
+      EmitSPRelativeAccess("lw", reg, info.offset, "t2");
+    }
+  } else {
+    EmitSPRelativeAccess("lw", reg, value_info_map.at(val).offset, "t2");
+  }
+}
+
+static void MoveValueFromRegister(const koopa_raw_value_t &val, const string &reg) {
+  if (val->kind.tag == KOOPA_RVT_GLOBAL_ALLOC){
+    ofs << "  la " << reg << ", " << val->name + 1 << endl;
+  } else {
+    EmitSPRelativeAccess("sw", reg, value_info_map.at(val).offset, "t2");
   }
 }
 
