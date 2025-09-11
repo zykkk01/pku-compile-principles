@@ -72,11 +72,16 @@ public:
         if (current_scope->var_table.count(symbol.name)) {
             return false;
         }
-        int count = symbol_counter[symbol.name]++;
-        if (count == 0) {
+        if (is_global_scope()) {
             symbol.unique_name = symbol.name;
         } else {
-            symbol.unique_name = symbol.name + "_" + std::to_string(count);
+            SymbolTable* global_scope = table_stack.front().get();
+            std::string candidate_name;
+            do {
+                int count = symbol_counter[symbol.name]++;
+                candidate_name = symbol.name + "_" + std::to_string(count);
+            } while (global_scope->var_table.count(candidate_name));
+            symbol.unique_name = candidate_name;
         }
         current_scope->var_table[symbol.name] = symbol;
         return true;
@@ -119,6 +124,10 @@ public:
 
     bool is_global_scope() const {
         return table_stack.size() == 1;
+    }
+
+    void clear_symbol_counter() {
+        symbol_counter.clear();
     }
 
 private:
@@ -203,9 +212,9 @@ decl @stoptime()
 
 )";
     for (const auto& [name, type] : {
-        std::pair{"getint", "int"},
-        {"getch", "int"},
-        {"getarray", "int"},
+        std::pair{"getint", "i32"},
+        {"getch", "i32"},
+        {"getarray", "i32"},
         {"putint", "void"},
         {"putch", "void"},
         {"putarray", "void"},
@@ -228,19 +237,38 @@ IRResult FuncDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) 
     lor_stmt_count = 0;
     land_stmt_count = 0;
     while_stmt_count = 0;
+    symbols.clear_symbol_counter();
 
     auto func_type_str = dynamic_cast<BTypeAST*>(func_type.get())->type;
     SymbolInfo symbol = {ident, "", 0, false, FUNC_SYMBOL, func_type_str};
     symbols.add_symbol(symbol);
     os << "fun @" << symbol.unique_name << "(";
     symbols.enter_scope();
-    std::vector<std::string> param_names;
+    std::vector<std::tuple<std::string, std::string>> param_types;
     for (size_t i = 0; i < func_f_params.size(); ++i) {
         auto param = dynamic_cast<FuncFParamAST*>(func_f_params[i].get());
-        SymbolInfo param_symbol = {param->ident, "", 0, false, VAR_SYMBOL, "int"};
+        std::string type;
+        if (param->is_array) {
+            type = "*i32";
+        } else {
+            type = "i32";
+        }
+        
+        std::vector<int> dims;
+        if (param->is_array) {
+            dims.push_back(0);
+            for (size_t j = 0; j < param->array_size_exps.size(); ++j) {
+                dims.push_back(param->array_size_exps[j]->evaluate_const(symbols));
+            }
+        }
+        SymbolInfo param_symbol = {param->ident, "", 0, false, VAR_SYMBOL, type, dims};
         symbols.add_symbol(param_symbol);
-        param_names.push_back(param_symbol.unique_name);
+        std::tuple<std::string, std::string> param_type = {param_symbol.unique_name, type};
+        param_types.push_back(param_type);
         os << "%" << param_symbol.unique_name << ": ";
+        if (param->is_array) {
+            os << "*";
+        }
         param->b_type->generate_ir(os, symbols);
         if (i < func_f_params.size() - 1) {
             os << ", ";
@@ -254,14 +282,14 @@ IRResult FuncDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) 
     os << " {" << std::endl;
     os << "%entry:" << std::endl;
 
-    for (const auto& param_name : param_names) {
-        os << "  @" << param_name << " = alloc i32" << std::endl;
-        os << "  store %" << param_name << ", @" << param_name << std::endl;
+    for (const auto& param_type : param_types) {
+        os << "  @" << std::get<0>(param_type) << " = alloc " << std::get<1>(param_type) << std::endl;
+        os << "  store %" << std::get<0>(param_type) << ", @" << std::get<0>(param_type) << std::endl;
     }
 
     auto block_res = block->generate_ir(os, symbols);
     if (!block_res.is_terminated) {
-        if (dynamic_cast<BTypeAST*>(func_type.get())->type == "int") {
+        if (dynamic_cast<BTypeAST*>(func_type.get())->type != "void") {
             os << "  ret 0" << std::endl;
         } else {
             os << "  ret" << std::endl;
@@ -314,6 +342,14 @@ IRResult StmtAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) con
                              if (symbol->dimensions.size() != lval_ast->array_index_exps.size()) {
                                 throw std::runtime_error("Incorrect number of dimensions for array " + lval_ast->ident);
                             }
+
+                            std::string arr = "@" + symbol->unique_name;
+                            bool is_array_param = symbol->dimensions.at(0) == 0;
+                            if (is_array_param) {
+                                std::string load_reg = "%" + std::to_string(next_reg++);
+                                os << "  " << load_reg << " = load " << arr << std::endl;
+                                arr = load_reg;
+                            }
                             std::string running_offset_reg = "%" + std::to_string(next_reg++);
                             os << "  " << running_offset_reg << " = add 0, 0" << std::endl;
 
@@ -330,11 +366,10 @@ IRResult StmtAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) con
                                 running_offset_reg = next_offset_reg;
                             }
                             final_offset_reg = running_offset_reg;
+                            std::string ptr_reg = "%" + std::to_string(next_reg++);
+                            os << "  " << ptr_reg << " = " << (is_array_param ? "getptr " : "getelemptr ") << arr << ", " << final_offset_reg << std::endl;
+                            os << "  store " << store_val.value << ", " << ptr_reg << std::endl;
                         }
-
-                        std::string ptr_reg = "%" + std::to_string(next_reg++);
-                        os << "  " << ptr_reg << " = getelemptr @" << symbol->unique_name << ", " << final_offset_reg << std::endl;
-                        os << "  store " << store_val.value << ", " << ptr_reg << std::endl;
                     } else {
                         os << "  store " << store_val.value << ", @" << symbol->unique_name << std::endl;
                     }
@@ -619,7 +654,7 @@ IRResult ConstDeclAST::generate_ir(std::ostream& os, SymbolTableManager& symbols
 
 IRResult ConstDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
     if (!array_size_exps.empty()) {
-        SymbolInfo symbol = {ident, "", 0, true, VAR_SYMBOL, "int"};
+        SymbolInfo symbol = {ident, "", 0, true, VAR_SYMBOL, "*i32"};
         
         long long total_size = 1;
         for (const auto& exp : array_size_exps) {
@@ -670,7 +705,7 @@ IRResult ConstDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols)
         return {};
     }
     int val = const_init_val->evaluate_const(symbols);
-    SymbolInfo symbol = {ident, "", val, true, VAR_SYMBOL, "int"};
+    SymbolInfo symbol = {ident, "", val, true, VAR_SYMBOL, "i32"};
     symbols.add_symbol(symbol);
     return {};
 }
@@ -703,7 +738,7 @@ IRResult VarDeclAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) 
 }
 
 IRResult VarDefAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) const {
-    SymbolInfo symbol = {ident, "", 0, false, VAR_SYMBOL, "int"};
+    SymbolInfo symbol = {ident, "", 0, false, VAR_SYMBOL, "i32"};
 
     if (!array_size_exps.empty()) {
         long long total_size = 1;
@@ -914,14 +949,18 @@ IRResult LValAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) con
         if (symbol->dimensions.empty()) {
             throw std::runtime_error("Indexing non-array variable " + ident);
         }
-        if (symbol->dimensions.size() != array_index_exps.size()) {
-            throw std::runtime_error("Incorrect number of dimensions for array " + ident);
+        std::string arr = "@" + symbol->unique_name;
+        bool is_array_param = symbol->dimensions.at(0) == 0;
+        if (is_array_param) {
+            std::string load_reg = "%" + std::to_string(next_reg++);
+            os << "  " << load_reg << " = load " << arr << std::endl;
+            arr = load_reg;
         }
 
         std::string running_offset_reg = "%" + std::to_string(next_reg++);
         os << "  " << running_offset_reg << " = add 0, 0" << std::endl;
 
-        for (size_t i = 0; i < symbol->dimensions.size(); ++i) {
+        for (size_t i = 0; i < array_index_exps.size(); ++i) {
             long long stride = 1;
             for (size_t j = i + 1; j < symbol->dimensions.size(); ++j) {
                 stride *= symbol->dimensions[j];
@@ -942,10 +981,28 @@ IRResult LValAST::generate_ir(std::ostream& os, SymbolTableManager& symbols) con
         }
 
         std::string ptr_reg = "%" + std::to_string(next_reg++);
-        std::string result_reg = "%" + std::to_string(next_reg++);
-        os << "  " << ptr_reg << " = getelemptr @" << symbol->unique_name << ", " << running_offset_reg << std::endl;
-        os << "  " << result_reg << " = load " << ptr_reg << std::endl;
-        return {result_reg, false};
+        os << "  " << ptr_reg << " = " << (is_array_param ? "getptr " : "getelemptr ") << arr << ", " << running_offset_reg << std::endl;
+
+        if (array_index_exps.size() < symbol->dimensions.size()) {
+            return {ptr_reg, false};
+        } else {
+            std::string result_reg = "%" + std::to_string(next_reg++);
+            os << "  " << result_reg << " = load " << ptr_reg << std::endl;
+            return {result_reg, false};
+        }
+    } else if (!symbol->dimensions.empty()) {
+        bool is_array_param = symbol->dimensions.at(0) == 0;
+        if (is_array_param) {
+            std::string load_reg = "%" + std::to_string(next_reg++);
+            os << "  " << load_reg << " = load @" + symbol->unique_name << std::endl;
+            std::string ptr_reg = "%" + std::to_string(next_reg++);
+            os << "  " << ptr_reg << " = getptr " << load_reg << ", 0" << std::endl;
+            return {ptr_reg, false};
+        } else {
+            std::string ptr_reg = "%" + std::to_string(next_reg++);
+            os << "  " << ptr_reg << " = getelemptr @" << symbol->unique_name << ", 0" << std::endl;
+            return {ptr_reg, false};
+        }
     }
 
     if (symbol->is_const) {

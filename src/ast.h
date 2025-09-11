@@ -52,6 +52,8 @@ class FuncFParamAST : public BaseAST {
 public:
     std::unique_ptr<BaseAST> b_type;
     std::string ident;
+    bool is_array = false;
+    std::vector<std::unique_ptr<BaseAST>> array_size_exps;
     IRResult generate_ir(std::ostream& os, SymbolTableManager& symbols) const override;
 };
 

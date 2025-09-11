@@ -108,6 +108,17 @@ FuncFParam
     ast->ident = *unique_ptr<string>($2);
     $$ = ast;
   }
+  | BType IDENT '[' ']' ExpArrayList {
+    auto ast = new FuncFParamAST();
+    ast->b_type = unique_ptr<BaseAST>($1);
+    ast->ident = *unique_ptr<string>($2);
+    ast->is_array = true;
+    auto array_exps = unique_ptr<vector<BaseAST *>>($5);
+    for (auto &exp : *array_exps) {
+      ast->array_size_exps.emplace_back(exp);
+    }
+    $$ = ast;
+  }
   ;
 
 Block
@@ -374,6 +385,11 @@ MatchedStmt
     auto ast = new StmtAST();
     ast->type = StmtType::RETURN_STMT;
     ast->exp = unique_ptr<BaseAST>($2);
+    $$ = ast;
+  }
+  | RETURN ';' {
+    auto ast = new StmtAST();
+    ast->type = StmtType::RETURN_STMT;
     $$ = ast;
   }
   ;
